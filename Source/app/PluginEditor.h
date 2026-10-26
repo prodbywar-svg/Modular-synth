@@ -38,13 +38,15 @@ private:
     void loadSampleInto (int track);
     void selectPattern (int pattern);
     void copyPatternTo (int pattern); // copies the pattern on screen
+    void clearPattern();              // empties the pattern on screen
+    void undoClear();
     void hitPad (int track, float velocity);
 
     ModularSynthProcessor& proc;
     int selected = 0;
 
     DataButton playButton { "PLAY" }, stopButton { "STOP" }, recButton { "REC" };
-    DataButton exportButton { "EXPORT" }, saveButton { "SAVE" }, openButton { "OPEN" };
+    DataButton exportButton { "EXPORT" }, saveButton { "SAVE" }, openButton { "OPEN" }, clearButton { "CLEAR" };
     std::array<DataButton, ms::kNumPatterns> patternButtons { DataButton { "P1" }, DataButton { "P2" }, DataButton { "P3" }, DataButton { "P4" } };
     DataReadout bpmReadout, swingReadout, stepReadout, posReadout, rateReadout, takeReadout;
 
@@ -54,6 +56,13 @@ private:
     std::array<bool, ms::kNumTracks> padKeyHeld {};
     std::array<juce::uint32, ms::kNumTracks> lastPadKeyTime {};
     bool keyboardFocusRequested = false;
+
+    struct ClearedPattern
+    {
+        int pattern = 0;
+        std::array<ms::Pattern, ms::kNumTracks> steps {};
+    };
+    std::optional<ClearedPattern> lastCleared; // for Ctrl+Z
 
     juce::String status;
     juce::uint32 statusTime = 0;

@@ -751,8 +751,9 @@ ModularSynthEditor::ModularSynthEditor (ModularSynthProcessor& p) : AudioProcess
     addAndMakeVisible (*grid);
     addAndMakeVisible (*panel);
 
-    for (auto* b : { &playButton, &stopButton, &recButton, &exportButton, &saveButton, &openButton })
+    for (auto* b : { &playButton, &stopButton, &recButton, &exportButton, &saveButton, &openButton, &clearButton })
         addAndMakeVisible (*b);
+    clearButton.onClick = [this] { clearPattern(); };
     for (int i = 0; i < kNumPatterns; ++i)
     {
         auto& b = patternButtons[(size_t) i];
@@ -923,6 +924,43 @@ void ModularSynthEditor::copyPatternTo (int pattern)
     setStatus ("COPIED P" + juce::String (from + 1) + " TO P" + juce::String (pattern + 1));
 }
 
+void ModularSynthEditor::clearPattern()
+{
+    const auto& state = proc.getUiState();
+    const int pattern = viewedPattern (state);
+
+    ClearedPattern undo;
+    undo.pattern = pattern;
+    bool anyOn = false;
+    for (int t = 0; t < kNumTracks; ++t)
+    {
+        undo.steps[(size_t) t] = state.tracks[(size_t) t].patterns[(size_t) pattern];
+        for (float v : undo.steps[(size_t) t])
+            anyOn = anyOn || v > 0.0f;
+    }
+    if (! anyOn)
+        return;
+
+    for (int t = 0; t < kNumTracks; ++t)
+        for (int s = 0; s < kNumSteps; ++s)
+            if (undo.steps[(size_t) t][(size_t) s] > 0.0f)
+                send (CommandType::SetStep, t, pattern * kNumSteps + s, 0.0f);
+    lastCleared = undo;
+    setStatus ("CLEARED P" + juce::String (pattern + 1) + " / CTRL+Z TO BRING IT BACK");
+}
+
+void ModularSynthEditor::undoClear()
+{
+    if (! lastCleared.has_value())
+        return;
+    const auto& undo = *lastCleared;
+    for (int t = 0; t < kNumTracks; ++t)
+        for (int s = 0; s < kNumSteps; ++s)
+            send (CommandType::SetStep, t, undo.pattern * kNumSteps + s, undo.steps[(size_t) t][(size_t) s]);
+    setStatus ("RESTORED P" + juce::String (undo.pattern + 1));
+    lastCleared.reset();
+}
+
 void ModularSynthEditor::togglePlay()
 {
     send (proc.isPlaying() ? CommandType::Stop : CommandType::Play, 0, 0, 0.0f);
@@ -1058,6 +1096,7 @@ bool ModularSynthEditor::keyPressed (const juce::KeyPress& key)
     {
         if (key.getKeyCode() == 'S') { saveProject(); return true; }
         if (key.getKeyCode() == 'O') { openProject(); return true; }
+        if (key.getKeyCode() == 'Z') { undoClear(); return true; }
         return false;
     }
 
@@ -1074,6 +1113,7 @@ bool ModularSynthEditor::keyPressed (const juce::KeyPress& key)
     }
 
     if (key == juce::KeyPress::spaceKey) { togglePlay(); return true; }
+    if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey) { clearPattern(); return true; }
     if (key == juce::KeyPress::escapeKey) { stop(); return true; }
     if (key == juce::KeyPress::upKey) { selectTrack (selected < 0 ? kNumTracks - 1 : juce::jmax (0, selected - 1)); return true; }
     if (key == juce::KeyPress::downKey) { selectTrack (selected < 0 || selected >= kNumTracks - 1 ? -1 : selected + 1); return true; }
@@ -1200,7 +1240,7 @@ void ModularSynthEditor::paint (juce::Graphics& g)
     g.setColour (proc.isRecording() ? look::red : look::ink);
     g.drawText (fresh ? status : juce::String ("READY"), statusArea, juce::Justification::centredLeft, true);
     g.setColour (look::dim);
-    g.drawText ("SPACE PLAY  R REC  E EXPORT  1-8 / A-K PADS  F1-F4 PATTERN (SHIFT = COPY HERE)  DRAG STEP = VELOCITY  RIGHT-CLICK NAME = VOICE",
+    g.drawText ("SPACE PLAY  R REC  E EXPORT  1-8 / A-K PADS  F1-F4 PATTERN (SHIFT = COPY HERE)  DEL CLEAR  DRAG STEP = VELOCITY  RIGHT-CLICK NAME = VOICE",
                 statusArea, juce::Justification::centredRight, true);
 }
 
@@ -1228,6 +1268,8 @@ void ModularSynthEditor::resized()
         b.setBounds (buttons.removeFromLeft (44));
         buttons.removeFromLeft (4);
     }
+    buttons.removeFromLeft (8);
+    clearButton.setBounds (buttons.removeFromLeft (72));
 
     // readouts across the top right
     auto readouts = header.withTrimmedTop (8).withTrimmedLeft (380);
