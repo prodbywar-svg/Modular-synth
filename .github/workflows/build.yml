@@ -1,0 +1,67 @@
+name: Build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows app
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Run engine tests
+        run: build\EngineTests_artefacts\Release\EngineTests.exe
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "build\ModularSynth_artefacts\Release\Standalone\Modular-synth.exe" dist\
+          Copy-Item README.md dist\
+          Compress-Archive -Path dist\* -DestinationPath Modular-synth-windows.zip -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Modular-synth-windows
+          path: dist/
+
+      # Every push to main also publishes a downloadable release on the repo's
+      # Releases page, so the newest .exe is always one click away.
+      - name: Publish release
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Modular-synth build ${{ github.run_number }}
+          body: |
+            Download **Modular-synth-windows.zip**, unzip it, and double-click `Modular-synth.exe`.
+            Built from commit ${{ github.sha }}.
+          files: Modular-synth-windows.zip
+          make_latest: true
+
+  linux-tests:
+    name: Engine tests (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxext-dev libxcomposite-dev libgl1-mesa-dev
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build tests
+        run: cmake --build build --target EngineTests
+      - name: Run tests
+        run: ./build/EngineTests_artefacts/Release/EngineTests
