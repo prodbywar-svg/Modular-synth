@@ -926,27 +926,43 @@ void ModularSynthEditor::copyPatternTo (int pattern)
 
 void ModularSynthEditor::clearPattern()
 {
+    // Empties the pattern on screen and puts every effects rack (the 8 tracks
+    // and the master) back to its defaults.
     const auto& state = proc.getUiState();
     const int pattern = viewedPattern (state);
+    const auto defaults = defaultFxParams();
 
     ClearedPattern undo;
     undo.pattern = pattern;
-    bool anyOn = false;
+    undo.masterFx = state.masterFx;
+    bool changed = state.masterFx != defaults;
     for (int t = 0; t < kNumTracks; ++t)
     {
-        undo.steps[(size_t) t] = state.tracks[(size_t) t].patterns[(size_t) pattern];
-        for (float v : undo.steps[(size_t) t])
-            anyOn = anyOn || v > 0.0f;
+        const auto& tr = state.tracks[(size_t) t];
+        undo.steps[(size_t) t] = tr.patterns[(size_t) pattern];
+        undo.fx[(size_t) t] = tr.fx;
+        changed = changed || tr.fx != defaults;
+        for (float v : tr.patterns[(size_t) pattern])
+            changed = changed || v > 0.0f;
     }
-    if (! anyOn)
+    if (! changed)
         return;
 
     for (int t = 0; t < kNumTracks; ++t)
+    {
         for (int s = 0; s < kNumSteps; ++s)
             if (undo.steps[(size_t) t][(size_t) s] > 0.0f)
                 send (CommandType::SetStep, t, pattern * kNumSteps + s, 0.0f);
+        for (int i = 0; i < kNumFxParams; ++i)
+            if (! juce::exactlyEqual (undo.fx[(size_t) t][(size_t) i], defaults[(size_t) i]))
+                send (CommandType::SetFxParam, t, i, defaults[(size_t) i]);
+    }
+    for (int i = 0; i < kNumFxParams; ++i)
+        if (! juce::exactlyEqual (undo.masterFx[(size_t) i], defaults[(size_t) i]))
+            send (CommandType::SetFxParam, -1, i, defaults[(size_t) i]);
+
     lastCleared = undo;
-    setStatus ("CLEARED P" + juce::String (pattern + 1) + " / CTRL+Z TO BRING IT BACK");
+    setStatus ("CLEARED P" + juce::String (pattern + 1) + " + RESET ALL EFFECTS / CTRL+Z TO BRING IT BACK");
 }
 
 void ModularSynthEditor::undoClear()
@@ -955,9 +971,15 @@ void ModularSynthEditor::undoClear()
         return;
     const auto& undo = *lastCleared;
     for (int t = 0; t < kNumTracks; ++t)
+    {
         for (int s = 0; s < kNumSteps; ++s)
             send (CommandType::SetStep, t, undo.pattern * kNumSteps + s, undo.steps[(size_t) t][(size_t) s]);
-    setStatus ("RESTORED P" + juce::String (undo.pattern + 1));
+        for (int i = 0; i < kNumFxParams; ++i)
+            send (CommandType::SetFxParam, t, i, undo.fx[(size_t) t][(size_t) i]);
+    }
+    for (int i = 0; i < kNumFxParams; ++i)
+        send (CommandType::SetFxParam, -1, i, undo.masterFx[(size_t) i]);
+    setStatus ("RESTORED P" + juce::String (undo.pattern + 1) + " AND THE EFFECTS");
     lastCleared.reset();
 }
 

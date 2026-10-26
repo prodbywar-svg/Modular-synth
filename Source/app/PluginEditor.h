@@ -38,7 +38,7 @@ private:
     void loadSampleInto (int track);
     void selectPattern (int pattern);
     void copyPatternTo (int pattern); // copies the pattern on screen
-    void clearPattern();              // empties the pattern on screen
+    void clearPattern();              // empties the pattern on screen, resets all effects
     void undoClear();
     void hitPad (int track, float velocity);
 
@@ -61,6 +61,8 @@ private:
     {
         int pattern = 0;
         std::array<ms::Pattern, ms::kNumTracks> steps {};
+        std::array<ms::FxParams, ms::kNumTracks> fx {};
+        ms::FxParams masterFx {};
     };
     std::optional<ClearedPattern> lastCleared; // for Ctrl+Z
 

@@ -20,7 +20,7 @@ WAV plus one WAV per instrument.
 | `Space` / **PLAY** | start and stop the pattern |
 | Click a step | switch it on or off; drag up/down on a lit step to set how hard it hits |
 | **P1**-**P4** / `F1`-`F4` | pick a pattern. While playing, the new one waits until the current pattern ends (outlined in blue while it waits) |
-| **CLEAR** / `Delete` | empty the pattern on screen (`Ctrl+Z` brings it back) |
+| **CLEAR** / `Delete` | empty the pattern on screen and reset every effect (tracks and master) to its default (`Ctrl+Z` brings it all back) |
 | `Shift`+click **P1**-**P4** / `Shift`+`F1`-`F4` | copy the pattern on screen into that slot |
 | Click the number box (01-08), or press `1`-`8` / `A S D F G H J K` | hit a pad live (`Shift` = softer) |
 | Click a track name | show its controls in the bottom panel |
