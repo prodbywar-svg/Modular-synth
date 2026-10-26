@@ -76,10 +76,12 @@ juce::String safeName (const juce::String& s)
 }
 } // namespace
 
-Take makePatternTake (const ProjectState& state, int loops, double sampleRate)
+Take makePatternTake (const ProjectState& state, int loops, double sampleRate, int pattern)
 {
     Take t;
     t.start = state;
+    t.start.pattern = pattern >= 0 ? pattern : viewedPattern (state);
+    t.start.queuedPattern = -1;
     t.sampleRate = sampleRate;
     const double stepLen = sampleRate * 60.0 / (double) state.bpm / 4.0;
     t.length = (std::int64_t) std::llround (stepLen * kNumSteps * std::max (1, loops));
@@ -166,9 +168,9 @@ ExportResult exportTake (const Take& take, const ExportOptions& opt,
     // ---- passes 2..9: one stem per track, same length as the master -------
     for (int t = 0; t < kNumTracks; ++t)
     {
-        const auto name = opt.trackNames[(size_t) t].isNotEmpty()
-                              ? opt.trackNames[(size_t) t]
-                              : juce::String (voiceTypeName (take.start.tracks[(size_t) t].voice));
+        const auto& tr = take.start.tracks[(size_t) t];
+        const auto name = opt.trackNames[(size_t) t].isNotEmpty() ? opt.trackNames[(size_t) t]
+                                                                  : juce::String (drumName (tr.voice, tr.character));
         const auto stemFile = opt.folder.getChildFile (opt.baseName + "_" + juce::String (t + 1).paddedLeft ('0', 2)
                                                        + "-" + safeName (name) + ".wav");
         auto stemWriter = makeWriter (stemFile, sr, opt.bitDepth);

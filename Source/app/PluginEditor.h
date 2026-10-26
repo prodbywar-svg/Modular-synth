@@ -36,6 +36,8 @@ private:
     void saveProject();
     void openProject();
     void loadSampleInto (int track);
+    void selectPattern (int pattern);
+    void copyPatternTo (int pattern); // copies the pattern on screen
     void hitPad (int track, float velocity);
 
     ModularSynthProcessor& proc;
@@ -43,6 +45,7 @@ private:
 
     DataButton playButton { "PLAY" }, stopButton { "STOP" }, recButton { "REC" };
     DataButton exportButton { "EXPORT" }, saveButton { "SAVE" }, openButton { "OPEN" };
+    std::array<DataButton, ms::kNumPatterns> patternButtons { DataButton { "P1" }, DataButton { "P2" }, DataButton { "P3" }, DataButton { "P4" } };
     DataReadout bpmReadout, swingReadout, stepReadout, posReadout, rateReadout, takeReadout;
 
     std::unique_ptr<TrackGrid> grid;

@@ -27,10 +27,10 @@ void EngineCore::reset()
     for (int t = 0; t < kNumTracks; ++t)
     {
         voices[(size_t) t].reset ((std::uint32_t) (t + 1) * 7919u);
-        trackFx[(size_t) t].setParams (project.tracks[(size_t) t].fx);
+        trackFx[(size_t) t].setParams (project.tracks[(size_t) t].fx, project.bpm);
         trackFx[(size_t) t].reset();
     }
-    masterFx.setParams (project.masterFx);
+    masterFx.setParams (project.masterFx, project.bpm);
     masterFx.reset();
 
     step = 0;
@@ -55,6 +55,15 @@ void EngineCore::apply (const Command& c)
         return;
     }
 
+    if (c.type == CommandType::SelectPattern && ! playing)
+    {
+        // nothing to wait for while stopped: switch straight away
+        auto now = c;
+        now.value = 0.0f;
+        applyToState (project, now);
+        return;
+    }
+
     applyToState (project, c);
 }
 
@@ -62,6 +71,11 @@ void EngineCore::setPlaying (bool shouldPlay)
 {
     if (shouldPlay && ! playing)
     {
+        if (project.queuedPattern >= 0)
+        {
+            project.pattern = project.queuedPattern;
+            project.queuedPattern = -1;
+        }
         step = 0;
         stepPhase = 0.0;
         stepFired = false;
@@ -78,7 +92,7 @@ void EngineCore::fireStep (int s)
 {
     for (int t = 0; t < kNumTracks; ++t)
     {
-        const float velocity = project.tracks[(size_t) t].steps[(size_t) s];
+        const float velocity = project.tracks[(size_t) t].patterns[(size_t) project.pattern][(size_t) s];
         if (velocity > 0.0f)
         {
             voices[(size_t) t].trigger (project.tracks[(size_t) t], velocity);
@@ -128,6 +142,12 @@ void EngineCore::process (float* left, float* right, int numSamples)
                     stepPhase -= stepLen;
                     step = (step + 1) % kNumSteps;
                     stepFired = false;
+                    // a queued pattern takes over exactly when the current one ends
+                    if (step == 0 && project.queuedPattern >= 0)
+                    {
+                        project.pattern = project.queuedPattern;
+                        project.queuedPattern = -1;
+                    }
                 }
             }
 
@@ -155,7 +175,7 @@ void EngineCore::process (float* left, float* right, int numSamples)
             }
 
             auto& fx = trackFx[(size_t) t];
-            fx.setParams (tr.fx);
+            fx.setParams (tr.fx, project.bpm);
             fx.process (trackL.data(), trackR.data(), n);
 
             const float gain = levelToGain (tr.level);
@@ -181,7 +201,7 @@ void EngineCore::process (float* left, float* right, int numSamples)
         }
 
         // 3. master effects and level
-        masterFx.setParams (project.masterFx);
+        masterFx.setParams (project.masterFx, project.bpm);
         masterFx.process (outL, outR, n);
 
         const float masterGain = levelToGain (project.masterLevel);

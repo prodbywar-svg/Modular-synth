@@ -37,6 +37,8 @@ public:
 
     // ---- read-outs for the UI (written by process) ------------------------
     int currentStep() const { return step; }
+    int currentPattern() const { return project.pattern; }
+    int queuedPattern() const { return project.queuedPattern; }
     float trackPeak (int t) const { return peaks[(size_t) t]; }
     float masterPeak() const { return masterPeakValue; }
     // True if the track was hit since the last clearTriggered().

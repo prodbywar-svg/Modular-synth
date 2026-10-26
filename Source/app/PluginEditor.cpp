@@ -5,7 +5,7 @@ using namespace ms;
 namespace
 {
 constexpr int kHeaderHeight = 84;
-constexpr int kPanelHeight = 178;
+constexpr int kPanelHeight = 232;
 constexpr int kStatusHeight = 24;
 constexpr int kMargin = 16;
 
@@ -96,11 +96,12 @@ public:
         auto& proc = editor.processor();
         const auto& state = proc.getUiState();
         const auto geo = geometry();
-        const bool playing = proc.isPlaying();
+        const int viewed = viewedPattern (state);
+        const bool playing = proc.isPlaying() && proc.currentPattern() == viewed;
         const int playStep = proc.currentStep();
 
         for (int t = 0; t < kNumTracks; ++t)
-            paintTrack (g, geo, t, state.tracks[(size_t) t], playing ? playStep : -1);
+            paintTrack (g, geo, t, state.tracks[(size_t) t], viewed, playing ? playStep : -1);
 
         paintMaster (g, geo, state);
 
@@ -112,6 +113,12 @@ public:
             g.drawText (look::pad (s + 1, 2), juce::Rectangle<float> (geo.stepX (s), 0.0f, geo.stepW, (float) kRulerHeight),
                         juce::Justification::centred);
         }
+        g.setFont (look::mono (9.5f, true));
+        g.setColour (state.queuedPattern >= 0 ? look::blue : look::ink);
+        g.drawText ("PATTERN P" + juce::String (viewed + 1) + (state.queuedPattern >= 0 ? " / QUEUED" : ""),
+                    juce::Rectangle<float> (geo.nameX + 10.0f, 0.0f, geo.stepsX - geo.nameX - 14.0f, (float) kRulerHeight),
+                    juce::Justification::centredLeft);
+        g.setFont (look::mono (9.0f));
         g.setColour (look::dim);
         g.drawText ("SIGNAL // " + juce::String (ModularSynthProcessor::kHistoryLength) + " x "
                         + juce::String (ModularSynthProcessor::kHistoryWindow) + " SMP",
@@ -171,7 +178,7 @@ public:
             editor.selectTrack (t);
             dragTrack = t;
             dragStep = s;
-            dragStartVelocity = tr.steps[(size_t) s];
+            dragStartVelocity = steps (tr)[(size_t) s];
             if (dragStartVelocity > 0.0f)
             {
                 dragMode = DragMode::PendingOff;
@@ -179,7 +186,7 @@ public:
             else
             {
                 dragMode = DragMode::PaintOn;
-                editor.send (CommandType::SetStep, t, s, 1.0f);
+                editor.send (CommandType::SetStep, t, stepIndex (s), 1.0f);
             }
             return;
         }
@@ -202,20 +209,20 @@ public:
         if (dragMode == DragMode::Velocity)
         {
             const float v = juce::jlimit (0.05f, 1.0f, dragStartVelocity - (float) e.getDistanceFromDragStartY() / 90.0f);
-            editor.send (CommandType::SetStep, dragTrack, dragStep, v);
+            editor.send (CommandType::SetStep, dragTrack, stepIndex (dragStep), v);
         }
         else if (dragMode == DragMode::PaintOn)
         {
             const int s = geo.stepAt (e.position.x);
-            if (s >= 0 && editor.processor().getUiState().tracks[(size_t) dragTrack].steps[(size_t) s] <= 0.0f)
-                editor.send (CommandType::SetStep, dragTrack, s, 1.0f);
+            if (s >= 0 && steps (editor.processor().getUiState().tracks[(size_t) dragTrack])[(size_t) s] <= 0.0f)
+                editor.send (CommandType::SetStep, dragTrack, stepIndex (s), 1.0f);
         }
     }
 
     void mouseUp (const juce::MouseEvent&) override
     {
         if (dragMode == DragMode::PendingOff)
-            editor.send (CommandType::SetStep, dragTrack, dragStep, 0.0f);
+            editor.send (CommandType::SetStep, dragTrack, stepIndex (dragStep), 0.0f);
         dragMode = DragMode::None;
     }
 
@@ -229,6 +236,11 @@ public:
 
 private:
     static constexpr int kRulerHeight = 18;
+
+    // the pattern on screen and the command index for one of its steps
+    int viewed() const { return viewedPattern (editor.processor().getUiState()); }
+    const Pattern& steps (const TrackState& tr) const { return tr.patterns[(size_t) viewed()]; }
+    int stepIndex (int step) const { return viewed() * kNumSteps + step; }
 
     struct Geometry
     {
@@ -325,7 +337,7 @@ private:
         g.drawText (text, box, juce::Justification::centred);
     }
 
-    void paintTrack (juce::Graphics& g, const Geometry& geo, int t, const TrackState& tr, int playStep)
+    void paintTrack (juce::Graphics& g, const Geometry& geo, int t, const TrackState& tr, int pattern, int playStep)
     {
         auto& proc = editor.processor();
         const float y0 = geo.rowY (t), h = geo.rowH, mid = y0 + h * 0.5f;
@@ -350,8 +362,8 @@ private:
         g.setFont (look::mono (9.5f));
         g.setColour (look::dim);
         char first[32];
-        formatVoiceParam (tr.voice, 0, tr.voiceParams[0], first, (int) sizeof (first));
-        juce::String sub = juce::String (first) + " / " + formatDb (levelToGain (tr.level));
+        formatVoiceParam (tr.voice, tr.character, 0, tr.voiceParams[0], first, (int) sizeof (first));
+        juce::String sub = juce::String (characterName (tr.character)) + " / " + juce::String (first);
         if (tr.voice == VoiceType::Sample && tr.sample == nullptr)
             sub = "EMPTY / RIGHT-CLICK";
         g.drawText (sub, juce::Rectangle<float> (geo.nameX + 10.0f, mid + 2.0f, geo.stepsX - geo.nameX - 14.0f, h * 0.5f - 6.0f),
@@ -367,7 +379,7 @@ private:
             g.setColour (s % 4 == 0 ? look::dim : look::faint);
             g.fillRect (x, y0 + h - 7.0f, 1.0f, 4.0f);
 
-            const float v = tr.steps[(size_t) s];
+            const float v = tr.patterns[(size_t) pattern][(size_t) s];
             if (v > 0.0f)
                 paintStepGlyph (g, { x + 3.0f, y0 + 7.0f, geo.stepW - 6.0f, h - 16.0f }, v, t * 31 + s, s == playStep, alpha);
         }
@@ -425,10 +437,11 @@ private:
 
         // effects summary as a raw data line
         juce::String data;
-        for (int i = 0; i < kNumFxParams; ++i)
+        for (int i : { fxCrushBits, fxDistDrive, fxDistMix, fxCutoff, fxDelayTime, fxDelayMix, fxGrainTime, fxGrainMix,
+                       fxReverbTime, fxReverbMix, fxPsyStages, fxPsyMix })
         {
             char buf[32];
-            formatFxParam (i, state.masterFx[(size_t) i], buf, (int) sizeof (buf));
+            formatFxParam (state.masterFx, i, buf, (int) sizeof (buf));
             data << fxParamName (i) << " " << buf << "   ";
         }
         g.setFont (look::mono (9.5f));
@@ -490,6 +503,17 @@ public:
                 editor.showVoiceMenu (editor.selectedTrack());
         };
 
+        for (int c = 0; c < kNumCharacters; ++c)
+        {
+            auto& b = characterButtons[(size_t) c];
+            b.setText (characterName ((Character) c));
+            addAndMakeVisible (b);
+            b.onClick = [this, c] {
+                if (editor.selectedTrack() >= 0)
+                    editor.send (CommandType::SetCharacter, editor.selectedTrack(), c, 0.0f);
+            };
+        }
+
         for (int i = 0; i < kNumVoiceParams; ++i)
         {
             auto& s = voice[(size_t) i];
@@ -522,9 +546,15 @@ public:
             addAndMakeVisible (s);
             s.setLabel (fxParamName (i));
             s.setDefault (defaults[(size_t) i]);
-            s.format = [i] (float v) {
+            s.setSteps (fxParamSteps (i));
+            if (fxParamIsToggle (i))
+                s.setToggle ("MS", "NOTE");
+            s.format = [this, i] (float v) {
+                // time readouts depend on their sync switch, so format the whole set
+                auto params = shownFx();
+                params[(size_t) i] = v;
                 char buf[32];
-                formatFxParam (i, v, buf, (int) sizeof (buf));
+                formatFxParam (params, i, buf, (int) sizeof (buf));
                 return juce::String (buf);
             };
             s.onChange = [this, i] (float v) { editor.send (CommandType::SetFxParam, editor.selectedTrack(), i, v); };
@@ -537,34 +567,45 @@ public:
         const auto& state = editor.processor().getUiState();
         const bool master = t < 0;
         const auto voiceType = master ? VoiceType::Count : state.tracks[(size_t) t].voice;
+        const auto character = master ? Character::Count : state.tracks[(size_t) t].character;
 
-        if (t != shownTrack || voiceType != shownVoice)
+        if (t != shownTrack || voiceType != shownVoice || character != shownCharacter)
         {
             shownTrack = t;
             shownVoice = voiceType;
+            shownCharacter = character;
             typeButton.setVisible (! master);
+            for (int c = 0; c < kNumCharacters; ++c)
+            {
+                characterButtons[(size_t) c].setVisible (! master);
+                characterButtons[(size_t) c].setOn (character == (Character) c);
+            }
             pan.setVisible (! master);
             level.setDefault (master ? ProjectState().masterLevel : TrackState().level);
 
-            const auto defaults = master ? VoiceParams {} : defaultVoiceParams (voiceType);
+            const auto defaults = master ? VoiceParams {} : defaultVoiceParams (voiceType, character);
             for (int i = 0; i < kNumVoiceParams; ++i)
             {
                 auto& s = voice[(size_t) i];
-                const char* name = master ? nullptr : voiceParamName (voiceType, i);
+                const char* name = master ? nullptr : voiceParamName (voiceType, character, i);
                 s.setVisible (name != nullptr);
                 if (name == nullptr)
                     continue;
                 s.setLabel (name);
                 s.setDefault (defaults[(size_t) i]);
-                s.format = [voiceType, i] (float v) {
+                s.setSteps (voiceParamSteps (voiceType, character, i));
+                s.snap = nullptr;
+                if (voiceParamIsPitch (voiceType, character, i))
+                    s.snap = [voiceType, character, i] (float v) { return snapVoiceParamToNote (voiceType, character, i, v); };
+                s.format = [voiceType, character, i] (float v) {
                     char buf[32];
-                    formatVoiceParam (voiceType, i, v, buf, (int) sizeof (buf));
+                    formatVoiceParam (voiceType, character, i, v, buf, (int) sizeof (buf));
                     return juce::String (buf);
                 };
                 s.repaint();
             }
             if (! master)
-                typeButton.setText ("TYPE: " + juce::String (voiceTypeName (voiceType)));
+                typeButton.setText ("TYPE: " + juce::String (drumName (voiceType, character)));
             repaint();
         }
 
@@ -599,44 +640,71 @@ public:
 
         g.setFont (look::mono (9.5f));
         g.setColour (look::dim);
-        const char* groups[] = { "VOICE", "MIX", "CRUSH + FILTER", "DELAY + REVERB" };
-        for (int c = 0; c < 4; ++c)
-            g.drawText (groups[c], columnX (c), 30, 200, 14, juce::Justification::centredLeft);
-        g.drawText ("DRAG / SHIFT FINE / DOUBLE-CLICK RESET", getWidth() / 2, 6, getWidth() / 2, 18, juce::Justification::centredRight);
+        const char* groups[] = { "VOICE + MIX", "CRUSH > DISTORT > FILTER", "DELAY > REVERB", "GRAIN DELAY", "PSYCHOSIS // OTT x 6" };
+        for (int c = 0; c < kColumns; ++c)
+            g.drawText (groups[c], columnX (c), 30, columnX (1) - 24, 14, juce::Justification::centredLeft);
+        g.drawText ("DRAG / SHIFT FINE / ALT OFF-NOTE / DOUBLE-CLICK RESET", getWidth() / 2, 6, getWidth() / 2, 18,
+                    juce::Justification::centredRight);
     }
 
     void resized() override
     {
-        const int rowH = 24, y0 = 48;
+        const int rowH = 20, y0 = 48;
         const int colW = columnX (1) - columnX (0) - 24;
 
-        typeButton.setBounds (columnX (1), 4, 140, 20);
+        auto top = juce::Rectangle<int> (columnX (1), 4, 400, 20);
+        typeButton.setBounds (top.removeFromLeft (150));
+        top.removeFromLeft (12);
+        for (auto& b : characterButtons)
+        {
+            b.setBounds (top.removeFromLeft (70));
+            top.removeFromLeft (4);
+        }
 
         for (int i = 0; i < kNumVoiceParams; ++i)
             voice[(size_t) i].setBounds (columnX (0), y0 + i * rowH, colW, rowH);
+        level.setBounds (columnX (0), y0 + 4 * rowH + 8, colW, rowH);
+        pan.setBounds (columnX (0), y0 + 5 * rowH + 8, colW, rowH);
 
-        level.setBounds (columnX (1), y0, colW, rowH);
-        pan.setBounds (columnX (1), y0 + rowH, colW, rowH);
-
-        const int c2[] = { fxCrushBits, fxCrushRate, fxCutoff, fxResonance };
-        for (int i = 0; i < 4; ++i)
-            fx[(size_t) c2[i]].setBounds (columnX (2), y0 + i * rowH, colW, rowH);
-
-        const int c3[] = { fxDelayTime, fxDelayFeedback, fxDelayMix, fxReverbSize, fxReverbMix };
-        for (int i = 0; i < 5; ++i)
-            fx[(size_t) c3[i]].setBounds (columnX (3), y0 + i * rowH, colW, rowH);
+        auto column = [&] (int c, std::initializer_list<int> params) {
+            int y = y0;
+            for (int p : params)
+            {
+                if (p < 0) // a small gap between effects
+                {
+                    y += 6;
+                    continue;
+                }
+                fx[(size_t) p].setBounds (columnX (c), y, colW, rowH);
+                y += rowH;
+            }
+        };
+        column (1, { fxCrushBits, fxCrushRate, -1, fxDistDrive, fxDistType, fxDistTone, fxDistMix, -1, fxCutoff, fxResonance });
+        column (2, { fxDelayTime, fxDelaySync, fxDelayFeedback, fxDelayMix, -1, fxReverbTime, fxReverbSync, fxReverbDamp, fxReverbMix });
+        column (3, { fxGrainTime, fxGrainSize, fxGrainSync, fxGrainPitch, fxGrainSpray, fxGrainFeedback, fxGrainMix });
+        column (4, { fxPsyDepth, fxPsyStages, fxPsyTime, fxPsySync, fxPsyMix });
     }
 
 private:
-    int columnX (int c) const { return c * (getWidth() + 24) / 4; }
+    static constexpr int kColumns = 5;
+    int columnX (int c) const { return c * (getWidth() + 24) / kColumns; }
+
+    FxParams shownFx() const
+    {
+        const auto& state = editor.processor().getUiState();
+        const int t = editor.selectedTrack();
+        return t < 0 ? state.masterFx : state.tracks[(size_t) t].fx;
+    }
 
     ModularSynthEditor& editor;
     DataButton typeButton { "TYPE" };
+    std::array<DataButton, kNumCharacters> characterButtons { DataButton { "LIVE" }, DataButton { "DIGITAL" }, DataButton { "HR-16" } };
     std::array<DataSlider, kNumVoiceParams> voice;
     DataSlider level, pan;
     std::array<DataSlider, kNumFxParams> fx;
     int shownTrack = -2;
     VoiceType shownVoice = VoiceType::Count;
+    Character shownCharacter = Character::Count;
 };
 
 // =============================================================================
@@ -685,6 +753,18 @@ ModularSynthEditor::ModularSynthEditor (ModularSynthProcessor& p) : AudioProcess
 
     for (auto* b : { &playButton, &stopButton, &recButton, &exportButton, &saveButton, &openButton })
         addAndMakeVisible (*b);
+    for (int i = 0; i < kNumPatterns; ++i)
+    {
+        auto& b = patternButtons[(size_t) i];
+        b.setText ("P" + juce::String (i + 1));
+        addAndMakeVisible (b);
+        b.onClick = [this, i] {
+            if (juce::ModifierKeys::getCurrentModifiers().isShiftDown())
+                copyPatternTo (i);
+            else
+                selectPattern (i);
+        };
+    }
     recButton.setAccent (look::red);
 
     playButton.onClick = [this] { togglePlay(); };
@@ -709,7 +789,7 @@ ModularSynthEditor::ModularSynthEditor (ModularSynthProcessor& p) : AudioProcess
     };
     swingReadout.onDoubleClick = [this] { send (CommandType::SetSwing, 0, 0, 0.0f); };
 
-    stepReadout.setLabel ("STEP");
+    stepReadout.setLabel ("PATTERN / STEP");
     posReadout.setLabel ("POSITION");
     rateReadout.setLabel ("SAMPLE RATE");
     takeReadout.setLabel ("TAKE");
@@ -718,8 +798,8 @@ ModularSynthEditor::ModularSynthEditor (ModularSynthProcessor& p) : AudioProcess
 
     setWantsKeyboardFocus (true);
     setResizable (true, true);
-    setResizeLimits (980, 640, 2600, 1700);
-    setSize (1240, 800);
+    setResizeLimits (1100, 720, 2600, 1700);
+    setSize (1320, 880);
     panel->refresh();
     startTimerHz (60);
 }
@@ -770,16 +850,24 @@ void ModularSynthEditor::showVoiceMenu (int track)
 {
     juce::PopupMenu m;
     m.addSectionHeader (look::pad (track + 1, 2) + " VOICE");
-    const auto current = proc.getUiState().tracks[(size_t) track].voice;
+    const auto& tr = proc.getUiState().tracks[(size_t) track];
     for (int v = 0; v < kNumVoiceTypes; ++v)
         if ((VoiceType) v != VoiceType::Sample)
-            m.addItem (1 + v, voiceTypeName ((VoiceType) v), true, current == (VoiceType) v);
+            m.addItem (1 + v, drumName ((VoiceType) v, tr.character), true, tr.voice == (VoiceType) v);
+    if (tr.voice != VoiceType::Sample)
+    {
+        m.addSectionHeader ("CHARACTER");
+        for (int c = 0; c < kNumCharacters; ++c)
+            m.addItem (200 + c, characterName ((Character) c), true, tr.character == (Character) c);
+    }
     m.addSeparator();
     m.addItem (100, "LOAD SAMPLE...");
 
     m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(), [this, track] (int r) {
         if (r == 100)
             loadSampleInto (track);
+        else if (r >= 200)
+            send (CommandType::SetCharacter, track, r - 200, 0.0f);
         else if (r > 0)
             send (CommandType::SetVoiceType, track, r - 1, 0.0f);
         panel->refresh();
@@ -808,6 +896,31 @@ void ModularSynthEditor::loadSampleInto (int track)
                               panel->refresh();
                               setStatus ("LOADED " + file.getFileName().toUpperCase() + " INTO TRACK " + look::pad (track + 1, 2));
                           });
+}
+
+void ModularSynthEditor::selectPattern (int pattern)
+{
+    // While playing, the new pattern waits for the current one to finish.
+    const bool queue = proc.isPlaying();
+    send (CommandType::SelectPattern, 0, pattern, queue ? 1.0f : 0.0f);
+    const auto& state = proc.getUiState();
+    if (queue && state.queuedPattern >= 0)
+        setStatus ("P" + juce::String (pattern + 1) + " QUEUED / STARTS WHEN P" + juce::String (state.pattern + 1) + " ENDS");
+}
+
+void ModularSynthEditor::copyPatternTo (int pattern)
+{
+    const auto& state = proc.getUiState();
+    const int from = viewedPattern (state);
+    if (from == pattern)
+        return;
+    for (int t = 0; t < kNumTracks; ++t)
+    {
+        const auto source = state.tracks[(size_t) t].patterns[(size_t) from];
+        for (int s = 0; s < kNumSteps; ++s)
+            send (CommandType::SetStep, t, pattern * kNumSteps + s, source[(size_t) s]);
+    }
+    setStatus ("COPIED P" + juce::String (from + 1) + " TO P" + juce::String (pattern + 1));
 }
 
 void ModularSynthEditor::togglePlay()
@@ -850,7 +963,8 @@ void ModularSynthEditor::chooseExport()
         m.addItem (1, "RECORDED TAKE  (PRESS REC FIRST)", false);
     m.addSeparator();
     for (int loops : { 1, 4, 8, 16 })
-        m.addItem (100 + loops, "PATTERN x" + juce::String (loops));
+        m.addItem (100 + loops, "PATTERN P" + juce::String (viewedPattern (proc.getUiState()) + 1)
+                                    + " x" + juce::String (loops));
 
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&exportButton), [this] (int r) {
         if (r <= 0)
@@ -861,7 +975,7 @@ void ModularSynthEditor::chooseExport()
             startExport (*proc.getLastTake(), "take-" + stamp);
         else if (r > 100)
             startExport (makePatternTake (proc.getUiState(), r - 100, proc.getEngineSampleRate()),
-                         "pattern-x" + juce::String (r - 100) + "-" + stamp);
+                         "p" + juce::String (viewedPattern (proc.getUiState()) + 1) + "-x" + juce::String (r - 100) + "-" + stamp);
     });
 }
 
@@ -947,6 +1061,18 @@ bool ModularSynthEditor::keyPressed (const juce::KeyPress& key)
         return false;
     }
 
+    for (int p = 0; p < kNumPatterns; ++p)
+    {
+        if (key.getKeyCode() == juce::KeyPress::F1Key + p)
+        {
+            if (mods.isShiftDown())
+                copyPatternTo (p);
+            else
+                selectPattern (p);
+            return true;
+        }
+    }
+
     if (key == juce::KeyPress::spaceKey) { togglePlay(); return true; }
     if (key == juce::KeyPress::escapeKey) { stop(); return true; }
     if (key == juce::KeyPress::upKey) { selectTrack (selected < 0 ? kNumTracks - 1 : juce::jmax (0, selected - 1)); return true; }
@@ -989,9 +1115,16 @@ void ModularSynthEditor::timerCallback()
         grabKeyboardFocus();
     }
 
+    proc.syncPatternFromEngine();
     const auto& state = proc.getUiState();
     const double sr = proc.getEngineSampleRate();
     const bool recording = proc.isRecording();
+
+    for (int p = 0; p < kNumPatterns; ++p)
+    {
+        patternButtons[(size_t) p].setOn (state.pattern == p);
+        patternButtons[(size_t) p].setMarked (state.queuedPattern == p);
+    }
 
     if (auto take = proc.takeFinishedRecording())
         setStatus ("TAKE READY " + formatTime ((double) take->length / take->sampleRate) + " / "
@@ -1002,7 +1135,8 @@ void ModularSynthEditor::timerCallback()
 
     bpmReadout.setText (juce::String (state.bpm, 1));
     swingReadout.setText (look::pad (juce::roundToInt (state.swing * 100.0f), 2) + " %");
-    stepReadout.setText (look::pad (proc.currentStep() + 1, 2) + " / " + juce::String (kNumSteps));
+    stepReadout.setText ("P" + juce::String (state.pattern + 1) + (state.queuedPattern >= 0 ? ">P" + juce::String (state.queuedPattern + 1) : juce::String())
+                         + "  " + look::pad (proc.currentStep() + 1, 2) + "/" + juce::String (kNumSteps));
     const auto pos = recording ? proc.recordedSamples() : proc.playedSamples();
     posReadout.setText (formatTime ((double) pos / sr) + "  " + juce::String::toHexString ((juce::int64) pos).paddedLeft ('0', 8).toUpperCase());
     posReadout.setColour (recording ? look::red : look::ink);
@@ -1042,7 +1176,7 @@ void ModularSynthEditor::paint (juce::Graphics& g)
     g.drawText ("MODULAR-SYNTH", kMargin, 12, 260, 20, juce::Justification::centredLeft);
     g.setFont (look::mono (9.5f));
     g.setColour (look::dim);
-    g.drawText ("DATAMATICS KIT // 8 TRACKS x 16 STEPS // V0.1", kMargin, 32, 360, 14, juce::Justification::centredLeft);
+    g.drawText ("DATAMATICS KIT // 8 TRACKS x 16 STEPS x 4 PATTERNS // V0.2", kMargin, 32, 360, 14, juce::Justification::centredLeft);
 
     // header rule, and the export progress as a blue line along it
     g.setColour (look::faint);
@@ -1066,7 +1200,7 @@ void ModularSynthEditor::paint (juce::Graphics& g)
     g.setColour (proc.isRecording() ? look::red : look::ink);
     g.drawText (fresh ? status : juce::String ("READY"), statusArea, juce::Justification::centredLeft, true);
     g.setColour (look::dim);
-    g.drawText ("SPACE PLAY  R REC  E EXPORT  1-8 / A-K PADS  CLICK STEP / DRAG = VELOCITY  RIGHT-CLICK NAME = VOICE",
+    g.drawText ("SPACE PLAY  R REC  E EXPORT  1-8 / A-K PADS  F1-F4 PATTERN (SHIFT = COPY HERE)  DRAG STEP = VELOCITY  RIGHT-CLICK NAME = VOICE",
                 statusArea, juce::Justification::centredRight, true);
 }
 
@@ -1088,10 +1222,16 @@ void ModularSynthEditor::resized()
         b->setBounds (buttons.removeFromLeft (80));
         buttons.removeFromLeft (6);
     }
+    buttons.removeFromLeft (18);
+    for (auto& b : patternButtons)
+    {
+        b.setBounds (buttons.removeFromLeft (44));
+        buttons.removeFromLeft (4);
+    }
 
     // readouts across the top right
     auto readouts = header.withTrimmedTop (8).withTrimmedLeft (380);
-    const int widths[] = { 90, 100, 80, 220, 150, 190 };
+    const int widths[] = { 90, 100, 120, 210, 140, 180 };
     DataReadout* order[] = { &bpmReadout, &swingReadout, &stepReadout, &posReadout, &rateReadout, &takeReadout };
     for (int i = 0; i < 6; ++i)
     {

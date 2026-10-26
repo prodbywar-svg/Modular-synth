@@ -17,16 +17,19 @@ struct SampleData
     juce::String path;
 };
 
+using Pattern = std::array<float, kNumSteps>; // velocity per step, 0 = off
+
 struct TrackState
 {
     VoiceType voice = VoiceType::Kick;
-    VoiceParams voiceParams = defaultVoiceParams (VoiceType::Kick);
+    Character character = Character::Digital;
+    VoiceParams voiceParams = defaultVoiceParams (VoiceType::Kick, Character::Digital);
     float level = 0.7071f; // unity gain
     float pan = 0.5f;
     bool mute = false;
     bool solo = false;
     FxParams fx = defaultFxParams();
-    std::array<float, kNumSteps> steps {}; // velocity per step, 0 = off
+    std::array<Pattern, kNumPatterns> patterns {};
     const SampleData* sample = nullptr;
 };
 
@@ -39,7 +42,12 @@ struct ProjectState
     std::array<TrackState, kNumTracks> tracks {};
     float masterLevel = 0.5f; // -6 dB of headroom for the sum
     FxParams masterFx = defaultFxParams();
+    int pattern = 0;        // the pattern playing (or that will play)
+    int queuedPattern = -1; // switches in when the current pattern ends
 };
+
+// The pattern being edited on screen: the queued one if any, else the current.
+inline int viewedPattern (const ProjectState& p) { return p.queuedPattern >= 0 ? p.queuedPattern : p.pattern; }
 
 constexpr float kMinBpm = 40.0f;
 constexpr float kMaxBpm = 300.0f;
@@ -53,13 +61,15 @@ enum class CommandType : std::uint8_t
 {
     Trigger,        // track, value = velocity
     SetVoiceType,   // track, index = VoiceType (resets voice params)
+    SetCharacter,   // track, index = Character (resets voice params)
     SetVoiceParam,  // track, index, value
     SetLevel,       // track, value
     SetPan,         // track, value
     SetMute,        // track, value 0/1
     SetSolo,        // track, value 0/1
     SetFxParam,     // track (-1 = master), index, value
-    SetStep,        // track, index = step, value = velocity
+    SetStep,        // track, index = pattern * kNumSteps + step, value = velocity
+    SelectPattern,  // index = pattern, value 1 = wait for the current pattern to end
     SetBpm,         // value in BPM
     SetSwing,       // value
     SetMasterLevel, // value

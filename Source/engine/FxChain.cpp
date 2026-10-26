@@ -6,8 +6,20 @@ namespace ms
 {
 namespace
 {
-constexpr float kMaxDelaySeconds = 2.0f;
+constexpr float kMaxDelaySeconds = 4.0f;
+
+float distort (int type, float x, float drive)
+{
+    const float d = x * drive;
+    switch (type)
+    {
+        case 0:  return std::tanh (d);                    // SOFT
+        case 1:  return std::clamp (d, -1.0f, 1.0f);      // HARD
+        case 2:  return std::sin (d * kPi * 0.5f);        // FOLD
+        default: return std::abs (std::tanh (d)) * 2.0f - 1.0f; // RECT (DC removed after)
+    }
 }
+} // namespace
 
 void FxChain::prepare (double sampleRate)
 {
@@ -15,7 +27,9 @@ void FxChain::prepare (double sampleRate)
     const auto size = (size_t) (kMaxDelaySeconds * sr) + 2;
     delayL.assign (size, 0.0f);
     delayR.assign (size, 0.0f);
-    reverb.setSampleRate (sr);
+    grain.prepare (sr);
+    reverb.prepare (sr);
+    psychosis.prepare (sr);
     reset();
 }
 
@@ -23,27 +37,42 @@ void FxChain::reset()
 {
     holdCounter = 0.0f;
     heldL = heldR = 0.0f;
+    distToneL.reset();
+    distToneR.reset();
+    dcInL = dcInR = dcOutL = dcOutR = 0.0f;
     filterL.reset();
     filterR.reset();
     std::fill (delayL.begin(), delayL.end(), 0.0f);
     std::fill (delayR.begin(), delayR.end(), 0.0f);
     writePos = 0;
+    grain.reset (99u);
     reverb.reset();
-    delayOn = reverbOn = filterOn = false;
+    psychosis.reset();
+    delayOn = grainOn = reverbOn = psyOn = filterOn = distOn = false;
     firstParams = true;
-    setParams (current);
+    setParams (current, currentBpm > 0.0 ? currentBpm : 120.0);
     delaySamples = delayTarget;
 }
 
-void FxChain::setParams (const FxParams& p)
+void FxChain::setParams (const FxParams& p, double bpm)
 {
-    if (! firstParams && p == current)
+    if (! firstParams && p == current && std::abs (bpm - currentBpm) < 1.0e-9)
         return;
     current = p;
+    currentBpm = bpm;
     firstParams = false;
 
     bits = crushBits (p[fxCrushBits]);
     holdFactor = crushFactor (p[fxCrushRate]);
+
+    distOn = p[fxDistMix] > 0.0001f;
+    distType = (int) fxParamValue (fxDistType, p[fxDistType]);
+    distDrive = fxParamValue (fxDistDrive, p[fxDistDrive]);
+    distNorm = distType == 0 ? 1.0f / std::max (0.3f, std::tanh (distDrive)) : 1.0f;
+    distMix = p[fxDistMix];
+    distToneOn = p[fxDistTone] < 0.999f;
+    distToneL.setup (fxParamValue (fxDistTone, p[fxDistTone]), 0.707f, sr);
+    distToneR.setup (fxParamValue (fxDistTone, p[fxDistTone]), 0.707f, sr);
 
     filterOn = p[fxCutoff] < 0.999f || p[fxResonance] > 0.001f;
     filterL.setup (cutoffHz (p[fxCutoff]), resonanceQ (p[fxResonance]), sr);
@@ -56,31 +85,37 @@ void FxChain::setParams (const FxParams& p)
         std::fill (delayR.begin(), delayR.end(), 0.0f);
     }
     delayOn = wantDelay;
-    delayTarget = (float) (delayMs (p[fxDelayTime]) * 0.001 * sr);
+    delayTarget = (float) std::clamp (fxTimeSeconds (p, fxDelayTime, bpm) * sr, 1.0, (double) delayL.size() - 2.0);
     feedback = delayFeedback (p[fxDelayFeedback]);
     delayMix = p[fxDelayMix];
+
+    const bool wantGrain = p[fxGrainMix] > 0.0001f;
+    if (wantGrain && ! grainOn)
+        grain.reset (99u);
+    grainOn = wantGrain;
+    grain.set (fxTimeSeconds (p, fxGrainTime, bpm), fxTimeSeconds (p, fxGrainSize, bpm),
+               fxParamValue (fxGrainPitch, p[fxGrainPitch]), p[fxGrainSpray],
+               fxParamValue (fxGrainFeedback, p[fxGrainFeedback]), p[fxGrainMix]);
 
     const bool wantReverb = p[fxReverbMix] > 0.0001f;
     if (wantReverb && ! reverbOn)
         reverb.reset();
     reverbOn = wantReverb;
+    reverb.set (fxTimeSeconds (p, fxReverbTime, bpm), p[fxReverbDamp], p[fxReverbMix]);
 
-    juce::Reverb::Parameters rp;
-    rp.roomSize = reverbRoom (p[fxReverbSize]);
-    rp.damping = 0.35f;
-    // juce::Reverb scales dry by 2 and wet by 3 internally; undo that so the
-    // dry signal stays at unity and REV MIX 1.0 means wet at roughly unity.
-    rp.wetLevel = p[fxReverbMix] / 3.0f;
-    rp.dryLevel = 0.5f;
-    rp.width = 1.0f;
-    rp.freezeMode = 0.0f;
-    reverb.setParameters (rp);
+    const bool wantPsy = p[fxPsyMix] > 0.0001f;
+    if (wantPsy && ! psyOn)
+        psychosis.reset();
+    psyOn = wantPsy;
+    psychosis.set ((int) fxParamValue (fxPsyStages, p[fxPsyStages]), p[fxPsyDepth],
+                   fxTimeSeconds (p, fxPsyTime, bpm), p[fxPsyMix]);
 }
 
 void FxChain::process (float* left, float* right, int numSamples)
 {
     const bool crushOn = bits < 15.5f || holdFactor > 1.01f;
     const int delaySize = (int) delayL.size();
+    const float dcCoeff = 1.0f - (float) (2.0 * kPi * 20.0 / sr);
 
     for (int i = 0; i < numSamples; ++i)
     {
@@ -98,6 +133,28 @@ void FxChain::process (float* left, float* right, int numSamples)
             }
             l = heldL;
             r = heldR;
+        }
+
+        if (distOn)
+        {
+            float dl = distort (distType, l, distDrive) * distNorm;
+            float dr = distort (distType, r, distDrive) * distNorm;
+            if (distType == 3) // remove the DC the rectifier adds
+            {
+                const float ol = dl - dcInL + dcCoeff * dcOutL;
+                const float orr = dr - dcInR + dcCoeff * dcOutR;
+                dcInL = dl;
+                dcInR = dr;
+                dcOutL = dl = ol;
+                dcOutR = dr = orr;
+            }
+            if (distToneOn)
+            {
+                dl = distToneL.lowpass (dl);
+                dr = distToneR.lowpass (dr);
+            }
+            l = l * (1.0f - distMix) + dl * distMix * 0.5f;
+            r = r * (1.0f - distMix) + dr * distMix * 0.5f;
         }
 
         if (filterOn)
@@ -131,7 +188,11 @@ void FxChain::process (float* left, float* right, int numSamples)
         right[i] = r;
     }
 
+    if (grainOn)
+        grain.process (left, right, numSamples);
     if (reverbOn)
-        reverb.processStereo (left, right, numSamples);
+        reverb.process (left, right, numSamples);
+    if (psyOn)
+        psychosis.process (left, right, numSamples);
 }
 } // namespace ms

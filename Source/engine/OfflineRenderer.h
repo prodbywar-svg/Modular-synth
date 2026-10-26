@@ -18,8 +18,9 @@ struct Take
     double sampleRate = 48000.0;
 };
 
-// A take that simply plays the current pattern a number of times.
-Take makePatternTake (const ProjectState&, int loops, double sampleRate);
+// A take that simply plays one pattern a number of times (-1 = the pattern on
+// screen).
+Take makePatternTake (const ProjectState&, int loops, double sampleRate, int pattern = -1);
 
 // Streams a render of the take to sink in blocks. soloTrack = -1 renders the
 // master; a track index renders that track's stem. Rendering continues past

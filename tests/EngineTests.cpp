@@ -1,5 +1,6 @@
 // Engine tests: run headless (no audio device, no window) on every build.
 
+#include "engine/Hr16Bank.h"
 #include "engine/OfflineRenderer.h"
 
 #include <cmath>
@@ -107,9 +108,9 @@ void testEachVoiceType()
     {
         ProjectState p;
         p.tracks[0].voice = (VoiceType) v;
-        p.tracks[0].voiceParams = defaultVoiceParams ((VoiceType) v);
+        p.tracks[0].voiceParams = defaultVoiceParams ((VoiceType) v, Character::Digital);
         p.tracks[0].sample = &sample;
-        p.tracks[0].steps[0] = 1.0f;
+        p.tracks[0].patterns[0][0] = 1.0f;
         const auto take = makePatternTake (p, 1, kSr);
         const auto out = render (take, -1, take.length);
         CHECK (out.finite());
@@ -147,13 +148,14 @@ void testStemsCarryMasterEffects()
 {
     std::printf ("a stem carries the master reverb\n");
     ProjectState p;
-    p.tracks[0].steps[0] = 1.0f;
+    p.tracks[0].patterns[0][0] = 1.0f;
     auto take = makePatternTake (p, 1, kSr);
     const auto len = take.length + (std::int64_t) kSr * 2;
     const auto dry = render (take, 0, len);
 
     take.start.masterFx[fxReverbMix] = 0.6f;
-    take.start.masterFx[fxReverbSize] = 0.9f;
+    take.start.masterFx[fxReverbSync] = 0.0f;
+    take.start.masterFx[fxReverbTime] = 0.85f; // a long tail, about 9 s
     const auto wet = render (take, 0, len);
 
     // long after the kick has died, only the master reverb tail remains
@@ -175,8 +177,8 @@ void testSwingTiming()
     p.bpm = 120.0f;
     p.swing = 0.5f;
     p.tracks[0].voice = VoiceType::ClickHat;
-    p.tracks[0].voiceParams = defaultVoiceParams (VoiceType::ClickHat);
-    p.tracks[0].steps[1] = 1.0f;
+    p.tracks[0].voiceParams = defaultVoiceParams (VoiceType::ClickHat, Character::Digital);
+    p.tracks[0].patterns[0][1] = 1.0f;
     const auto take = makePatternTake (p, 1, kSr);
     const auto out = render (take, -1, take.length);
     const double stepLen = kSr * 60.0 / 120.0 / 4.0; // 6000
@@ -189,13 +191,13 @@ void testRecordedEventsReplay()
 {
     std::printf ("recorded pad hits and mutes replay at the right sample\n");
     ProjectState p;
-    p.tracks[0].steps = {}; // silent pattern
+    p.tracks[0].patterns[0] = {}; // silent pattern
     p.tracks[1].voice = VoiceType::NoiseSnare;
-    p.tracks[1].voiceParams = defaultVoiceParams (VoiceType::NoiseSnare);
+    p.tracks[1].voiceParams = defaultVoiceParams (VoiceType::NoiseSnare, Character::Digital);
     p.tracks[2].voice = VoiceType::Kick;
-    p.tracks[2].voiceParams = defaultVoiceParams (VoiceType::Kick);
+    p.tracks[2].voiceParams = defaultVoiceParams (VoiceType::Kick, Character::Digital);
     for (int s = 0; s < kNumSteps; s += 4)
-        p.tracks[2].steps[(size_t) s] = 1.0f;
+        p.tracks[2].patterns[0][(size_t) s] = 1.0f;
 
     Take take;
     take.start = p;
@@ -226,7 +228,7 @@ void testParameterChangeIsRecorded()
 {
     std::printf ("recorded knob moves change the sound\n");
     ProjectState p;
-    p.tracks[0].steps[0] = 1.0f;
+    p.tracks[0].patterns[0][0] = 1.0f;
     Take take = makePatternTake (p, 2, kSr);
     const auto before = render (take, 0, take.length);
 
@@ -304,12 +306,17 @@ void testSaveAndOpen()
     p.tracks[3].mute = true;
     p.tracks[5].fx[fxDelayMix] = 0.4f;
     p.masterFx[fxCrushBits] = 0.5f;
+    p.masterFx[fxPsyMix] = 0.3f;
+    p.tracks[2].character = Character::Hr16;
+    p.tracks[1].patterns[3][5] = 0.75f;
+    p.pattern = 2;
 
     const auto json = juce::JSON::toString (projectToVar (p));
     ProjectState q;
     std::array<juce::String, kNumTracks> paths;
     CHECK (projectFromVar (juce::JSON::parse (json), q, paths));
     CHECK (q.bpm == p.bpm);
+    CHECK (q.pattern == 2);
     CHECK (q.swing == p.swing);
     CHECK (q.tracks[3].mute);
     CHECK (q.tracks[5].fx == p.tracks[5].fx);
@@ -317,32 +324,191 @@ void testSaveAndOpen()
     for (int t = 0; t < kNumTracks; ++t)
     {
         CHECK (q.tracks[(size_t) t].voice == p.tracks[(size_t) t].voice);
-        CHECK (q.tracks[(size_t) t].steps == p.tracks[(size_t) t].steps);
+        CHECK (q.tracks[(size_t) t].patterns == p.tracks[(size_t) t].patterns);
+        CHECK (q.tracks[(size_t) t].character == p.tracks[(size_t) t].character);
         CHECK (q.tracks[(size_t) t].voiceParams == p.tracks[(size_t) t].voiceParams);
     }
 
     CHECK (! projectFromVar (juce::JSON::parse ("{\"format\":\"other\"}"), q, paths));
 }
+
+void testEveryCharacterRenders()
+{
+    std::printf ("every drum renders in LIVE, DIGITAL and HR-16\n");
+    for (int c = 0; c < kNumCharacters; ++c)
+    {
+        for (int v = 0; v < (int) VoiceType::Sample; ++v)
+        {
+            ProjectState p;
+            auto& t = p.tracks[0];
+            t.voice = (VoiceType) v;
+            t.character = (Character) c;
+            t.voiceParams = defaultVoiceParams (t.voice, t.character);
+            t.patterns[0][0] = 1.0f;
+            const auto take = makePatternTake (p, 1, kSr);
+            const auto out = render (take, -1, take.length);
+            const bool ok = out.finite() && out.peak() > 0.01f && out.peak() < 2.0f;
+            if (! ok)
+                std::printf ("  %s / %s peak %g\n", characterName ((Character) c), voiceTypeName ((VoiceType) v), (double) out.peak());
+            CHECK (ok);
+        }
+    }
+
+    for (int v = 0; v < (int) VoiceType::Sample; ++v)
+        for (int i = 0; i < hr16SoundCount ((VoiceType) v); ++i)
+            CHECK (hr16Sample ((VoiceType) v, i) != nullptr);
+}
+
+void testPatternQueue()
+{
+    std::printf ("a queued pattern starts only when the current one ends\n");
+    ProjectState p;
+    p.bpm = 120.0f;
+    p.tracks[0].patterns[0][0] = 1.0f; // P1: kick on step 1
+    p.tracks[0].patterns[1][8] = 1.0f; // P2: kick on step 9
+    Take take = makePatternTake (p, 3, kSr, 0);
+    const auto loop = take.length / 3;
+    const auto step = loop / kNumSteps;
+
+    Command select;
+    select.type = CommandType::SelectPattern;
+    select.index = 1;
+    select.value = 1.0f; // queue
+    take.events.push_back ({ step * 3, select }); // pressed during step 4 of loop 1
+    const auto out = render (take, -1, take.length);
+
+    CHECK (out.onset() == 0);                                 // loop 1 still P1
+    CHECK (out.onset (loop - 100) >= loop + step * 8 - 1);    // loop 2 is P2: nothing on step 1
+    CHECK (out.onset (loop - 100) <= loop + step * 8 + 1);
+
+    std::printf ("selecting while stopped switches straight away\n");
+    EngineCore engine;
+    engine.prepare (kSr, 256);
+    engine.setState (p);
+    engine.apply (select);
+    CHECK (engine.currentPattern() == 1);
+    CHECK (engine.queuedPattern() == -1);
+}
+
+void testNoteSyncedDelay()
+{
+    std::printf ("a delay synced to 1/4 repeats one beat later\n");
+    ProjectState p;
+    p.bpm = 120.0f;
+    p.tracks[0].voice = VoiceType::ClickHat;
+    p.tracks[0].voiceParams = defaultVoiceParams (VoiceType::ClickHat, Character::Digital);
+    p.tracks[0].voiceParams[2] = 0.0f; // pure single-sample click
+    p.tracks[0].patterns[0][0] = 1.0f;
+    p.tracks[0].fx[fxDelaySync] = 1.0f;
+    p.tracks[0].fx[fxDelayTime] = 10.0f / 18.0f; // division 10 = 1/4
+    p.tracks[0].fx[fxDelayFeedback] = 0.0f;
+    p.tracks[0].fx[fxDelayMix] = 1.0f;
+    const auto take = makePatternTake (p, 1, kSr);
+    const auto out = render (take, -1, take.length);
+    const auto echo = out.onset (200, 0.01f);
+    std::printf ("  echo at %lld (expected 24000)\n", (long long) echo);
+    CHECK (std::llabs (echo - 24000) <= 2);
+
+    char buf[32];
+    formatFxParam (p.tracks[0].fx, fxDelayTime, buf, (int) sizeof (buf));
+    CHECK (std::string (buf) == "1/4");
+}
+
+void testNewEffectsAreSane()
+{
+    std::printf ("grain delay, distortion, reverb and Psychosis stay finite and audible\n");
+    for (int fx : { fxGrainMix, fxDistMix, fxReverbMix, fxPsyMix })
+    {
+        auto p = makeDefaultProject();
+        p.masterFx[(size_t) fx] = 1.0f;
+        p.masterFx[fxDistDrive] = 0.8f;
+        p.masterFx[fxGrainPitch] = 1.0f; // +12 st
+        const auto take = makePatternTake (p, 1, kSr);
+        const auto out = render (take, -1, take.length + (std::int64_t) kSr);
+        const bool ok = out.finite() && out.peak() > 0.05f && out.peak() < 4.0f;
+        if (! ok)
+            std::printf ("  %s peak %g\n", fxParamName (fx), (double) out.peak());
+        CHECK (ok);
+    }
+
+    for (int type = 0; type < 4; ++type)
+    {
+        auto p = makeDefaultProject();
+        p.masterFx[fxDistMix] = 1.0f;
+        p.masterFx[fxDistType] = (float) type / 3.0f;
+        p.masterFx[fxDistDrive] = 1.0f;
+        const auto take = makePatternTake (p, 1, kSr);
+        CHECK (render (take, -1, take.length).finite());
+    }
+}
+
+void testPitchNames()
+{
+    std::printf ("pitches read as note names\n");
+    char buf[32];
+    noteNameForFrequency (41.2034f, buf, (int) sizeof (buf));
+    CHECK (std::string (buf) == "E1");
+    noteNameForFrequency (440.0f, buf, (int) sizeof (buf));
+    CHECK (std::string (buf) == "A4");
+    noteNameForFrequency (446.0f, buf, (int) sizeof (buf));
+    CHECK (std::string (buf) == "A4+23c");
+
+    // snapping lands exactly on a note
+    const float v = snapVoiceParamToNote (VoiceType::Kick, Character::Digital, 0, 0.37f);
+    formatVoiceParam (VoiceType::Kick, Character::Digital, 0, v, buf, (int) sizeof (buf));
+    std::printf ("  kick pitch snapped: %s\n", buf);
+    CHECK (std::string (buf).find ('c') == std::string::npos); // no cents
+}
 } // namespace
 
-// EngineTests --demo <folder>: renders the starter pattern (master + stems)
-// so the kit can be heard without opening the app.
+// EngineTests --demo <folder>: renders the starter patterns (master + stems)
+// with each drum character, plus one through the new effects, so the kit can
+// be heard without opening the app.
 int renderDemo (const char* folder)
 {
-    ExportOptions opt;
-    opt.folder = juce::File::getCurrentWorkingDirectory().getChildFile (folder);
-    opt.baseName = "starter-kit";
+    const auto root = juce::File::getCurrentWorkingDirectory().getChildFile (folder);
+    bool ok = true;
+
+    auto renderOne = [&] (ProjectState p, int pattern, const juce::String& name) {
+        ExportOptions opt;
+        opt.folder = root.getChildFile (name);
+        opt.baseName = name;
+        for (int t = 0; t < kNumTracks; ++t)
+            opt.trackNames[(size_t) t] = drumName (p.tracks[(size_t) t].voice, p.tracks[(size_t) t].character);
+        const auto result = exportTake (makePatternTake (p, 4, kSr, pattern), opt);
+        for (const auto& f : result.files)
+            std::printf ("%s\n", f.getFullPathName().toRawUTF8());
+        ok = ok && result.ok;
+    };
+
+    const char* names[] = { "live", "digital", "hr16" };
+    for (int c = 0; c < kNumCharacters; ++c)
+    {
+        auto p = makeDefaultProject();
+        if ((Character) c != Character::Digital) // the default kit is already digital
+            for (int t = 0; t < kNumTracks - 1; ++t)
+                applyToState (p, { CommandType::SetCharacter, t, c, 0.0f });
+        p.masterFx[fxReverbMix] = 0.12f;
+        p.masterFx[fxReverbTime] = 0.4f;
+        renderOne (p, 0, juce::String ("p1-") + names[c]);
+    }
+
+    // P2 through distortion, a 1/16 grain delay, a 1/8D delay and Psychosis
     auto p = makeDefaultProject();
-    p.masterFx[fxReverbMix] = 0.12f;
-    p.masterFx[fxReverbSize] = 0.7f;
-    const auto result = exportTake (makePatternTake (p, 8, kSr), opt);
-    for (const auto& f : result.files)
-        std::printf ("%s\n", f.getFullPathName().toRawUTF8());
-    return result.ok ? 0 : 1;
+    p.masterFx[fxDistDrive] = 0.35f;
+    p.masterFx[fxDistMix] = 0.5f;
+    p.masterFx[fxDelayMix] = 0.25f;
+    p.masterFx[fxGrainMix] = 0.3f;
+    p.masterFx[fxGrainPitch] = 1.0f; // +12 st
+    p.masterFx[fxPsyMix] = 0.7f;
+    renderOne (p, 1, "p2-effects");
+
+    return ok ? 0 : 1;
 }
 
 int main (int argc, char** argv)
 {
+    loadHr16Bank();
     if (argc == 3 && std::string (argv[1]) == "--demo")
         return renderDemo (argv[2]);
 
@@ -356,6 +522,11 @@ int main (int argc, char** argv)
     testParameterChangeIsRecorded();
     testExportFiles();
     testSaveAndOpen();
+    testEveryCharacterRenders();
+    testPatternQueue();
+    testNoteSyncedDelay();
+    testNewEffectsAreSane();
+    testPitchNames();
 
     if (failures == 0)
         std::printf ("\nall engine tests passed\n");

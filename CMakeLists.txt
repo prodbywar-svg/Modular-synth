@@ -29,13 +29,21 @@ set(ENGINE_SOURCES
     Source/engine/ProjectState.cpp
     Source/engine/Voice.cpp
     Source/engine/FxChain.cpp
+    Source/engine/Effects.cpp
+    Source/engine/Hr16Bank.cpp
     Source/engine/EngineCore.cpp
     Source/engine/OfflineRenderer.cpp)
+
+# The Alesis HR-16 sounds are compiled into the app.
+file(GLOB HR16_WAVS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/assets/hr16/*.wav)
+juce_add_binary_data(Hr16Samples SOURCES ${HR16_WAVS})
+set_target_properties(Hr16Samples PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 set(ENGINE_MODULES
     juce::juce_core
     juce::juce_audio_basics
-    juce::juce_audio_formats)
+    juce::juce_audio_formats
+    Hr16Samples)
 
 # ---------------------------------------------------------------- app
 set(MS_FORMATS Standalone)

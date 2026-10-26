@@ -31,9 +31,22 @@ public:
     float getValue() const { return value; }
     void setDefault (float v) { defaultValue = v; }
     void setBipolar (bool b) { bipolar = b; }
+    // Discrete positions (0 = continuous), e.g. the HR-16 sound number.
+    void setSteps (int n) { steps = n; }
+    // A two-way switch: click flips it, the labels show which side is on.
+    void setToggle (const juce::String& offText, const juce::String& onText)
+    {
+        toggleOff = offText;
+        toggleOn = onText;
+        repaint();
+    }
+    void clearToggle() { toggleOff = toggleOn = {}; }
+    bool isToggle() const { return toggleOn.isNotEmpty(); }
 
     std::function<void (float)> onChange;
     std::function<juce::String (float)> format;
+    // Applied to dragged / scrolled values unless Alt is held (snap to notes).
+    std::function<float (float)> snap;
 
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -43,10 +56,12 @@ public:
 
 private:
     void change (float v);
+    void changeByUser (float v, const juce::ModifierKeys&);
 
-    juce::String label;
+    juce::String label, toggleOff, toggleOn;
     float value = 0.0f, defaultValue = 0.0f, dragStartValue = 0.0f;
     bool bipolar = false;
+    int steps = 0;
 };
 
 // Text button in brackets: "[ PLAY ]". Inverts when on; red when on if accent.
@@ -66,6 +81,15 @@ public:
     bool isOn() const { return on; }
     void setAccent (juce::Colour c) { accent = c; hasAccent = true; }
     void setText (const juce::String& t) { text = t; repaint(); }
+    // A blue outline: "waiting to happen", e.g. a queued pattern.
+    void setMarked (bool b)
+    {
+        if (b != marked)
+        {
+            marked = b;
+            repaint();
+        }
+    }
 
     std::function<void()> onClick;
 
@@ -76,7 +100,7 @@ public:
 
 private:
     juce::String text;
-    bool on = false, hasAccent = false;
+    bool on = false, hasAccent = false, marked = false;
     juce::Colour accent;
 };
 

@@ -4,16 +4,17 @@ namespace ms
 {
 namespace
 {
-void setVoice (TrackState& t, VoiceType type)
+void setVoice (TrackState& t, VoiceType type, Character c = Character::Digital)
 {
     t.voice = type;
-    t.voiceParams = defaultVoiceParams (type);
+    t.character = c;
+    t.voiceParams = defaultVoiceParams (type, c);
 }
 
-void setSteps (TrackState& t, std::initializer_list<std::pair<int, float>> steps)
+void setSteps (Pattern& p, std::initializer_list<std::pair<int, float>> steps)
 {
     for (auto [step, velocity] : steps)
-        t.steps[(size_t) step] = velocity;
+        p[(size_t) step] = velocity;
 }
 
 float clamp01 (float v) { return juce::jlimit (0.0f, 1.0f, v); }
@@ -32,6 +33,43 @@ void readFloatArray (const juce::var& v, float* values, int count)
         for (int i = 0; i < juce::jmin (count, a->size()); ++i)
             values[i] = clamp01 ((float) (*a)[i]);
 }
+
+juce::var fxToVar (const FxParams& fx)
+{
+    auto o = std::make_unique<juce::DynamicObject>();
+    for (int i = 0; i < kNumFxParams; ++i)
+        o->setProperty (fxParamName (i), fx[(size_t) i]);
+    return juce::var (o.release());
+}
+
+void fxFromVar (const juce::var& v, FxParams& fx)
+{
+    if (auto* o = v.getDynamicObject())
+    {
+        for (const auto& prop : o->getProperties())
+        {
+            const int i = fxParamFromName (prop.name.toString().toRawUTF8());
+            if (i >= 0)
+                fx[(size_t) i] = clamp01 ((float) prop.value);
+        }
+    }
+    else if (auto* a = v.getArray())
+    {
+        // version 1 files: CUTOFF RESO BITS DOWNSMP DLY-TIME DLY-FDBK DLY-MIX REV-SIZE REV-MIX
+        auto at = [a] (int i) { return i < a->size() ? clamp01 ((float) (*a)[i]) : 0.0f; };
+        fx[fxCutoff] = at (0);
+        fx[fxResonance] = at (1);
+        fx[fxCrushBits] = at (2);
+        fx[fxCrushRate] = at (3);
+        const float oldDelayMs = 10.0f + at (4) * 990.0f;
+        fx[fxDelayTime] = clamp01 (std::log (oldDelayMs / 5.0f) / std::log (400.0f));
+        fx[fxDelaySync] = 0.0f;
+        fx[fxDelayFeedback] = at (5);
+        fx[fxDelayMix] = at (6);
+        fx[fxReverbTime] = clamp01 (0.2f + at (7) * 0.5f);
+        fx[fxReverbMix] = at (8);
+    }
+}
 } // namespace
 
 ProjectState makeDefaultProject()
@@ -40,31 +78,46 @@ ProjectState makeDefaultProject()
     auto& t = p.tracks;
 
     setVoice (t[0], VoiceType::Kick);
-    setSteps (t[0], { { 0, 1.0f }, { 4, 1.0f }, { 8, 1.0f }, { 10, 0.7f }, { 12, 1.0f } });
-
     setVoice (t[1], VoiceType::ClickHat);
-    for (int s = 0; s < kNumSteps; ++s)
-        t[1].steps[(size_t) s] = (s % 2 == 0) ? 1.0f : 0.45f;
-
     setVoice (t[2], VoiceType::NoiseSnare);
-    setSteps (t[2], { { 4, 1.0f }, { 12, 1.0f }, { 15, 0.4f } });
-
     setVoice (t[3], VoiceType::SineTone);
-    setSteps (t[3], { { 2, 0.8f }, { 11, 0.8f } });
     t[3].level = 0.5f;
-
     setVoice (t[4], VoiceType::Glitch);
-    setSteps (t[4], { { 6, 0.8f }, { 14, 0.8f } });
     t[4].level = 0.55f;
-
     setVoice (t[5], VoiceType::ClickHat); // open click
     t[5].voiceParams = { 0.55f, 0.4f, 0.8f, 0.0f };
-    setSteps (t[5], { { 7, 0.7f } });
-
     setVoice (t[6], VoiceType::SineTone); // low pulse
     t[6].voiceParams = { 0.25f, 0.5f, 0.5f, 0.0f };
-
     setVoice (t[7], VoiceType::Sample);
+
+    // P1: the starter groove
+    {
+        setSteps (t[0].patterns[0], { { 0, 1.0f }, { 4, 1.0f }, { 8, 1.0f }, { 10, 0.7f }, { 12, 1.0f } });
+        for (int s = 0; s < kNumSteps; ++s)
+            t[1].patterns[0][(size_t) s] = (s % 2 == 0) ? 1.0f : 0.45f;
+        setSteps (t[2].patterns[0], { { 4, 1.0f }, { 12, 1.0f }, { 15, 0.4f } });
+        setSteps (t[3].patterns[0], { { 2, 0.8f }, { 11, 0.8f } });
+        setSteps (t[4].patterns[0], { { 6, 0.8f }, { 14, 0.8f } });
+        setSteps (t[5].patterns[0], { { 7, 0.7f } });
+    }
+    // P2: busier, broken kick
+    {
+        setSteps (t[0].patterns[1], { { 0, 1.0f }, { 3, 0.8f }, { 6, 1.0f }, { 8, 1.0f }, { 11, 0.8f }, { 14, 1.0f } });
+        for (int s = 0; s < kNumSteps; ++s)
+            t[1].patterns[1][(size_t) s] = 0.35f + 0.65f * (float) ((s * 7) % 3 == 0);
+        setSteps (t[2].patterns[1], { { 4, 1.0f }, { 12, 1.0f }, { 13, 0.5f }, { 15, 0.7f } });
+        setSteps (t[4].patterns[1], { { 2, 0.8f }, { 7, 0.6f }, { 10, 0.8f }, { 15, 0.6f } });
+        setSteps (t[6].patterns[1], { { 0, 0.9f }, { 8, 0.9f } });
+    }
+    // P3: half-time, sparse
+    {
+        setSteps (t[0].patterns[2], { { 0, 1.0f }, { 10, 0.8f } });
+        setSteps (t[1].patterns[2], { { 0, 0.6f }, { 4, 0.6f }, { 8, 0.6f }, { 12, 0.6f } });
+        setSteps (t[2].patterns[2], { { 8, 1.0f } });
+        setSteps (t[3].patterns[2], { { 3, 0.8f }, { 6, 0.6f }, { 13, 0.8f } });
+        setSteps (t[5].patterns[2], { { 14, 0.8f } });
+    }
+    // P4 starts empty
 
     return p;
 }
@@ -84,7 +137,11 @@ void applyToState (ProjectState& p, const Command& c)
     {
         case CommandType::SetVoiceType:
             if (track != nullptr && c.index >= 0 && c.index < kNumVoiceTypes)
-                setVoice (*track, (VoiceType) c.index);
+                setVoice (*track, (VoiceType) c.index, track->character);
+            break;
+        case CommandType::SetCharacter:
+            if (track != nullptr && c.index >= 0 && c.index < kNumCharacters)
+                setVoice (*track, track->voice, (Character) c.index);
             break;
         case CommandType::SetVoiceParam:
             if (track != nullptr && c.index >= 0 && c.index < kNumVoiceParams)
@@ -112,8 +169,22 @@ void applyToState (ProjectState& p, const Command& c)
             }
             break;
         case CommandType::SetStep:
-            if (track != nullptr && c.index >= 0 && c.index < kNumSteps)
-                track->steps[(size_t) c.index] = clamp01 (c.value);
+        {
+            const int pattern = c.index / kNumSteps, step = c.index % kNumSteps;
+            if (track != nullptr && c.index >= 0 && pattern < kNumPatterns)
+                track->patterns[(size_t) pattern][(size_t) step] = clamp01 (c.value);
+            break;
+        }
+        case CommandType::SelectPattern:
+            if (c.index < 0 || c.index >= kNumPatterns)
+                break;
+            if (c.value > 0.5f)
+                p.queuedPattern = c.index == p.pattern ? -1 : c.index;
+            else
+            {
+                p.pattern = c.index;
+                p.queuedPattern = -1;
+            }
             break;
         case CommandType::SetBpm:
             p.bpm = juce::jlimit (kMinBpm, kMaxBpm, c.value);
@@ -140,24 +211,29 @@ juce::var projectToVar (const ProjectState& p)
 {
     auto root = std::make_unique<juce::DynamicObject>();
     root->setProperty ("format", "modular-synth");
-    root->setProperty ("version", 1);
+    root->setProperty ("version", 2);
     root->setProperty ("bpm", p.bpm);
     root->setProperty ("swing", p.swing);
+    root->setProperty ("pattern", p.pattern);
     root->setProperty ("masterLevel", p.masterLevel);
-    root->setProperty ("masterFx", floatArray (p.masterFx.data(), kNumFxParams));
+    root->setProperty ("masterFx", fxToVar (p.masterFx));
 
     juce::Array<juce::var> tracks;
     for (const auto& t : p.tracks)
     {
         auto o = std::make_unique<juce::DynamicObject>();
         o->setProperty ("voice", voiceTypeName (t.voice));
+        o->setProperty ("character", characterName (t.character));
         o->setProperty ("voiceParams", floatArray (t.voiceParams.data(), kNumVoiceParams));
         o->setProperty ("level", t.level);
         o->setProperty ("pan", t.pan);
         o->setProperty ("mute", t.mute);
         o->setProperty ("solo", t.solo);
-        o->setProperty ("fx", floatArray (t.fx.data(), kNumFxParams));
-        o->setProperty ("steps", floatArray (t.steps.data(), kNumSteps));
+        o->setProperty ("fx", fxToVar (t.fx));
+        juce::Array<juce::var> patterns;
+        for (const auto& pat : t.patterns)
+            patterns.add (floatArray (pat.data(), kNumSteps));
+        o->setProperty ("patterns", patterns);
         o->setProperty ("sample", t.sample != nullptr ? t.sample->path : juce::String());
         tracks.add (juce::var (o.release()));
     }
@@ -174,8 +250,9 @@ bool projectFromVar (const juce::var& v, ProjectState& p, std::array<juce::Strin
     ProjectState result;
     result.bpm = juce::jlimit (kMinBpm, kMaxBpm, (float) v.getProperty ("bpm", result.bpm));
     result.swing = clamp01 ((float) v.getProperty ("swing", result.swing));
+    result.pattern = juce::jlimit (0, kNumPatterns - 1, (int) v.getProperty ("pattern", 0));
     result.masterLevel = clamp01 ((float) v.getProperty ("masterLevel", result.masterLevel));
-    readFloatArray (v.getProperty ("masterFx", {}), result.masterFx.data(), kNumFxParams);
+    fxFromVar (v.getProperty ("masterFx", {}), result.masterFx);
 
     if (auto* tracks = v.getProperty ("tracks", {}).getArray())
     {
@@ -183,14 +260,24 @@ bool projectFromVar (const juce::var& v, ProjectState& p, std::array<juce::Strin
         {
             const auto& o = (*tracks)[i];
             auto& t = result.tracks[(size_t) i];
-            setVoice (t, voiceTypeFromName (o.getProperty ("voice", "KICK").toString().toRawUTF8()));
+            setVoice (t, voiceTypeFromName (o.getProperty ("voice", "KICK").toString().toRawUTF8()),
+                      characterFromName (o.getProperty ("character", "DIGITAL").toString().toRawUTF8()));
             readFloatArray (o.getProperty ("voiceParams", {}), t.voiceParams.data(), kNumVoiceParams);
             t.level = clamp01 ((float) o.getProperty ("level", t.level));
             t.pan = clamp01 ((float) o.getProperty ("pan", t.pan));
             t.mute = (bool) o.getProperty ("mute", false);
             t.solo = (bool) o.getProperty ("solo", false);
-            readFloatArray (o.getProperty ("fx", {}), t.fx.data(), kNumFxParams);
-            readFloatArray (o.getProperty ("steps", {}), t.steps.data(), kNumSteps);
+            fxFromVar (o.getProperty ("fx", {}), t.fx);
+
+            if (auto* patterns = o.getProperty ("patterns", {}).getArray())
+            {
+                for (int pi = 0; pi < juce::jmin (kNumPatterns, patterns->size()); ++pi)
+                    readFloatArray ((*patterns)[pi], t.patterns[(size_t) pi].data(), kNumSteps);
+            }
+            else // version 1: one pattern
+            {
+                readFloatArray (o.getProperty ("steps", {}), t.patterns[0].data(), kNumSteps);
+            }
             samplePaths[(size_t) i] = o.getProperty ("sample", {}).toString();
         }
     }

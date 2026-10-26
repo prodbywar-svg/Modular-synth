@@ -1,5 +1,7 @@
 #include "Widgets.h"
 
+#include <array>
+
 namespace look
 {
 juce::Font mono (float height, bool bold)
@@ -29,6 +31,8 @@ void DataSlider::setValue (float v)
 void DataSlider::change (float v)
 {
     v = juce::jlimit (0.0f, 1.0f, v);
+    if (steps > 1)
+        v = std::round (v * (float) (steps - 1)) / (float) (steps - 1);
     if (juce::exactlyEqual (v, value))
         return;
     value = v;
@@ -37,10 +41,51 @@ void DataSlider::change (float v)
         onChange (value);
 }
 
+void DataSlider::changeByUser (float v, const juce::ModifierKeys& mods)
+{
+    v = juce::jlimit (0.0f, 1.0f, v);
+    if (snap && ! mods.isAltDown())
+        v = snap (v);
+    change (v);
+}
+
 void DataSlider::paint (juce::Graphics& g)
 {
     const auto b = getLocalBounds().toFloat();
     const float labelW = 72.0f, valueW = 76.0f;
+
+    if (isToggle())
+    {
+        g.setFont (look::mono (11.0f));
+        g.setColour (isMouseOverOrDragging() ? look::ink : look::dim);
+        g.drawText (label, b.withWidth (labelW).toNearestInt(), juce::Justification::centredLeft);
+
+        auto area = b.withTrimmedLeft (labelW).withSizeKeepingCentre (b.getWidth() - labelW, juce::jmin (15.0f, b.getHeight() - 2.0f));
+        area.setWidth (juce::jmin (area.getWidth(), 120.0f));
+        const bool onSide = value > 0.5f;
+        auto halves = std::array<juce::Rectangle<float>, 2> { area.withWidth (area.getWidth() * 0.5f),
+                                                               area.withTrimmedLeft (area.getWidth() * 0.5f) };
+        const juce::String texts[2] = { toggleOff, toggleOn };
+        g.setFont (look::mono (10.0f, true));
+        for (int i = 0; i < 2; ++i)
+        {
+            const bool active = (i == 1) == onSide;
+            if (active)
+            {
+                g.setColour (look::ink);
+                g.fillRect (halves[(size_t) i]);
+                g.setColour (look::background);
+            }
+            else
+            {
+                g.setColour (look::faint);
+                g.drawRect (halves[(size_t) i], 1.0f);
+                g.setColour (look::dim);
+            }
+            g.drawText (texts[i], halves[(size_t) i], juce::Justification::centred);
+        }
+        return;
+    }
     const auto line = b.withTrimmedLeft (labelW).withTrimmedRight (valueW + 8.0f);
     const float y = b.getCentreY();
 
@@ -76,22 +121,51 @@ void DataSlider::paint (juce::Graphics& g)
 void DataSlider::mouseDown (const juce::MouseEvent&)
 {
     dragStartValue = value;
+    if (isToggle())
+        change (value > 0.5f ? 0.0f : 1.0f);
 }
 
 void DataSlider::mouseDrag (const juce::MouseEvent& e)
 {
+    if (isToggle())
+        return;
     const float width = juce::jmax (40.0f, (float) getWidth() - 156.0f);
     const float scale = e.mods.isShiftDown() ? 0.1f : 1.0f;
-    change (dragStartValue + (float) e.getDistanceFromDragStartX() / width * scale);
+    // stepped controls need a longer throw per position to stay usable
+    const float throwScale = steps > 1 ? juce::jmin (1.0f, (float) steps / 24.0f) : 1.0f;
+    changeByUser (dragStartValue + (float) e.getDistanceFromDragStartX() / width * scale * throwScale, e.mods);
 }
 
 void DataSlider::mouseDoubleClick (const juce::MouseEvent&)
 {
-    change (defaultValue);
+    if (! isToggle())
+        change (defaultValue);
 }
 
 void DataSlider::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
 {
+    if (isToggle() || juce::exactlyEqual (w.deltaY, 0.0f))
+        return;
+    if (steps > 1)
+    {
+        change (value + (w.deltaY > 0.0f ? 1.0f : -1.0f) / (float) (steps - 1));
+        return;
+    }
+    if (snap && ! e.mods.isAltDown())
+    {
+        // step to the next note in the scroll direction
+        const float dir = w.deltaY > 0.0f ? 1.0f : -1.0f;
+        for (float probe = value + dir * 0.002f; probe >= 0.0f && probe <= 1.0f; probe += dir * 0.002f)
+        {
+            const float snapped = snap (probe);
+            if (! juce::exactlyEqual (snapped, value) && (snapped - value) * dir > 0.0f)
+            {
+                change (snapped);
+                return;
+            }
+        }
+        return;
+    }
     change (value + w.deltaY * (e.mods.isShiftDown() ? 0.01f : 0.05f));
 }
 
@@ -107,6 +181,12 @@ void DataButton::paint (juce::Graphics& g)
         g.setColour (colour);
         g.fillRect (b);
         g.setColour (look::background);
+    }
+    else if (marked)
+    {
+        g.setColour (look::blue);
+        g.drawRect (b, 1.5f);
+        g.setColour (look::ink);
     }
     else
     {

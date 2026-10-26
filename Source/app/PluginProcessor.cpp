@@ -2,6 +2,8 @@
 
 #include "PluginEditor.h"
 
+#include "engine/Hr16Bank.h"
+
 using namespace ms;
 
 namespace
@@ -20,6 +22,7 @@ int padForNote (int note)
 ModularSynthProcessor::ModularSynthProcessor()
     : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true))
 {
+    loadHr16Bank();
     for (auto& t : takes)
         t.events.reserve (kMaxRecordedEvents);
 }
@@ -55,6 +58,7 @@ void ModularSynthProcessor::replaceProject (const ProjectState& p)
     {
         const auto& tr = p.tracks[(size_t) t];
         cmd (CommandType::SetVoiceType, t, (int) tr.voice, 0.0f);
+        cmd (CommandType::SetCharacter, t, (int) tr.character, 0.0f);
         for (int i = 0; i < kNumVoiceParams; ++i)
             cmd (CommandType::SetVoiceParam, t, i, tr.voiceParams[(size_t) i]);
         cmd (CommandType::SetLevel, t, 0, tr.level);
@@ -63,11 +67,13 @@ void ModularSynthProcessor::replaceProject (const ProjectState& p)
         cmd (CommandType::SetSolo, t, 0, tr.solo ? 1.0f : 0.0f);
         for (int i = 0; i < kNumFxParams; ++i)
             cmd (CommandType::SetFxParam, t, i, tr.fx[(size_t) i]);
-        for (int s = 0; s < kNumSteps; ++s)
-            cmd (CommandType::SetStep, t, s, tr.steps[(size_t) s]);
+        for (int pat = 0; pat < kNumPatterns; ++pat)
+            for (int s = 0; s < kNumSteps; ++s)
+                cmd (CommandType::SetStep, t, pat * kNumSteps + s, tr.patterns[(size_t) pat][(size_t) s]);
         cmd (CommandType::SetSample, t, 0, 0.0f, tr.sample);
     }
 
+    cmd (CommandType::SelectPattern, 0, p.pattern, 0.0f);
     cmd (CommandType::SetBpm, 0, 0, p.bpm);
     cmd (CommandType::SetSwing, 0, 0, p.swing);
     cmd (CommandType::SetMasterLevel, 0, 0, p.masterLevel);
@@ -143,7 +149,7 @@ juce::String ModularSynthProcessor::trackName (int track) const
     const auto& tr = uiState.tracks[(size_t) track];
     if (tr.voice == VoiceType::Sample && tr.sample != nullptr)
         return juce::File (tr.sample->path).getFileNameWithoutExtension().toUpperCase();
-    return voiceTypeName (tr.voice);
+    return drumName (tr.voice, tr.character);
 }
 
 std::optional<Take> ModularSynthProcessor::takeFinishedRecording()
@@ -154,6 +160,18 @@ std::optional<Take> ModularSynthProcessor::takeFinishedRecording()
 
     lastTake = takes[(size_t) index];
     return lastTake;
+}
+
+void ModularSynthProcessor::syncPatternFromEngine()
+{
+    // The engine switches to a queued pattern on its own at the end of a bar;
+    // mirror that once it has happened.
+    const int queued = uiState.queuedPattern;
+    if (queued >= 0 && queuedPatternIndex.load() < 0 && currentPatternIndex.load() == queued)
+    {
+        uiState.pattern = queued;
+        uiState.queuedPattern = -1;
+    }
 }
 
 float ModularSynthProcessor::trackHistory (int t, int age) const
@@ -318,6 +336,8 @@ void ModularSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
     playingFlag = engine.isPlaying();
     recordingFlag = recording;
     stepIndex = engine.currentStep();
+    currentPatternIndex = engine.currentPattern();
+    queuedPatternIndex = engine.queuedPattern();
     recordedSampleCount = recordPosition;
 }
 

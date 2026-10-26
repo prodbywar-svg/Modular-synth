@@ -43,6 +43,10 @@ public:
     bool isPlaying() const { return playingFlag.load(); }
     bool isRecording() const { return recordingFlag.load(); }
     int currentStep() const { return stepIndex.load(); }
+    int currentPattern() const { return currentPatternIndex.load(); }
+    int queuedPattern() const { return queuedPatternIndex.load(); }
+    // Call from the message thread regularly (the editor's timer does).
+    void syncPatternFromEngine();
     std::int64_t recordedSamples() const { return recordedSampleCount.load(); }
     std::int64_t playedSamples() const { return playedSampleCount.load(); }
     int recordedEvents() const { return recordedEventCount.load(); }
@@ -106,6 +110,7 @@ private:
     // read-outs
     std::atomic<bool> playingFlag { false }, recordingFlag { false };
     std::atomic<int> stepIndex { 0 }, recordedEventCount { 0 };
+    std::atomic<int> currentPatternIndex { 0 }, queuedPatternIndex { -1 };
     std::atomic<std::int64_t> recordedSampleCount { 0 }, playedSampleCount { 0 };
     std::atomic<float> masterPeakValue { 0.0f };
     std::atomic<double> sampleRateForUi { 48000.0 };

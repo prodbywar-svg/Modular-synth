@@ -19,26 +19,49 @@ public:
     bool isActive() const { return active; }
 
 private:
-    float nextKick();
-    float nextClickHat();
-    float nextNoiseSnare();
-    float nextSineTone();
-    float nextGlitch();
+    enum class Mode
+    {
+        DigitalKick,
+        DigitalHat,
+        DigitalSnare,
+        DigitalSine,
+        DigitalGlitch,
+        LiveKick,
+        LiveHat,
+        LiveSnare,
+        LiveTom,
+        LiveClap,
+        Sample,
+    };
+
+    float nextDigitalKick();
+    float nextDigitalHat();
+    float nextDigitalSnare();
+    float nextDigitalSine();
+    float nextDigitalGlitch();
+    float nextLiveKick();
+    float nextLiveHat();
+    float nextLiveSnare();
+    float nextLiveTom();
+    float nextLiveClap();
     float nextSample();
 
     double sr = 48000.0;
     bool active = false;
-    VoiceType type = VoiceType::Kick;
+    Mode mode = Mode::DigitalKick;
     float velocity = 1.0f;
     std::int64_t age = 0; // samples since trigger
     std::int64_t length = 0;
 
-    // shared state, meaning depends on the voice type
+    // shared state, meaning depends on the mode
     double phase = 0.0;
+    std::array<double, 6> phases {};
+    std::array<float, 6> freqs {};
     float env = 0.0f, envMul = 1.0f;
     float env2 = 0.0f, env2Mul = 1.0f;
+    float env3 = 0.0f, env3Mul = 1.0f;
     float freq = 0.0f, freqTarget = 0.0f, freqMul = 1.0f;
-    float a = 0.0f, b = 0.0f, c = 0.0f;
+    float a = 0.0f, b = 0.0f, c = 0.0f, d = 0.0f;
     float held = 0.0f;
     double holdCounter = 0.0, holdPeriod = 1.0;
     double samplePos = 0.0, sampleStep = 1.0;
