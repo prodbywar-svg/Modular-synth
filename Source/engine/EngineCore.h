@@ -41,6 +41,10 @@ public:
     int queuedPattern() const { return project.queuedPattern; }
     float trackPeak (int t) const { return peaks[(size_t) t]; }
     float masterPeak() const { return masterPeakValue; }
+    // A track's output (mono, after its effects and level, silent when muted)
+    // for the last chunk process() rendered: the whole call when numSamples
+    // is no more than the prepared maxBlockSize.
+    const float* trackOutput (int t) const { return taps.data() + t * maxBlock; }
     // True if the track was hit since the last clearTriggered().
     bool trackTriggered (int t) const { return triggeredThisBlock[(size_t) t]; }
     void clearTriggered() { triggeredThisBlock.fill (false); }
@@ -62,6 +66,7 @@ private:
 
     std::vector<float> voiceBuf; // kNumTracks * maxBlock mono
     std::vector<float> trackL, trackR;
+    std::vector<float> taps; // kNumTracks * maxBlock mono, see trackOutput()
 
     bool playing = false;
     int step = 0;

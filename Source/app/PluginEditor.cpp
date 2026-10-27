@@ -33,6 +33,53 @@ juce::String formatPan (float v)
     return (p < 0 ? "L " : "R ") + juce::String (std::abs (p));
 }
 
+// In-place radix-2 FFT; n must be a power of two.
+void fft (float* re, float* im, int n)
+{
+    for (int i = 1, j = 0; i < n; ++i)
+    {
+        int bit = n >> 1;
+        for (; (j & bit) != 0; bit >>= 1)
+            j ^= bit;
+        j ^= bit;
+        if (i < j)
+        {
+            std::swap (re[i], re[j]);
+            std::swap (im[i], im[j]);
+        }
+    }
+    for (int len = 2; len <= n; len <<= 1)
+    {
+        const double angle = -2.0 * juce::MathConstants<double>::pi / len;
+        const float wr = (float) std::cos (angle), wi = (float) std::sin (angle);
+        for (int i = 0; i < n; i += len)
+        {
+            float cr = 1.0f, ci = 0.0f;
+            for (int k = 0; k < len / 2; ++k)
+            {
+                const int a = i + k, b = i + k + len / 2;
+                const float vr = re[b] * cr - im[b] * ci, vi = re[b] * ci + im[b] * cr;
+                re[b] = re[a] - vr;
+                im[b] = im[a] - vi;
+                re[a] += vr;
+                im[a] += vi;
+                const float next = cr * wr - ci * wi;
+                ci = cr * wi + ci * wr;
+                cr = next;
+            }
+        }
+    }
+}
+
+template <size_t N>
+std::array<float, N> makeHannWindow()
+{
+    std::array<float, N> w {};
+    for (size_t i = 0; i < N; ++i)
+        w[i] = 0.5f - 0.5f * std::cos (2.0f * juce::MathConstants<float>::pi * (float) i / (float) N);
+    return w;
+}
+
 class DatamaticsLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
@@ -375,65 +422,222 @@ private:
                 paintStepTag (g, { x + 2.0f, y0 + 7.0f, geo.stepW - 4.0f, h - 16.0f }, v, s == playStep, alpha);
         }
 
-        // signal panel: the track's output as rows of data lines flowing left,
-        // newest on the right. Louder = more rows lit. A red cursor marks the
-        // latest hit while it travels across.
+        // signal panel: the track's harmonic lattice, see paintSignalBox
         const auto bx = geo.barcodeX, bw = geo.barcodeW;
-        const auto box = juce::Rectangle<float> (bx - 1.0f, y0 + 5.0f, bw + 2.0f, h - 10.0f);
-        const auto rowsArea = box.reduced (2.0f).withTrimmedTop (4.0f);
-        const int rows = juce::jmax (4, (int) (rowsArea.getHeight() / 4.0f));
-        const float rowGap = rowsArea.getHeight() / (float) rows;
-
-        g.setColour (look::faint);
-        for (int r = 0; r < rows; ++r)
-            g.fillRect (rowsArea.getX(), rowsArea.getY() + rowGap * ((float) r + 0.5f), rowsArea.getWidth(), 1.0f);
-
-        const int columns = (int) bw;
-        const int writePos = proc.historyWritePosition();
-        float lastPeak = 0.0f, previous = 0.0f, held = 0.0f;
-        int onsetAge = -1;
-        for (int c = columns - 1; c >= 0; --c)
-        {
-            const float level = proc.trackHistory (t, c);
-            if (c < 8)
-                lastPeak = juce::jmax (lastPeak, level);
-            if (level > 0.05f && level > previous * 2.0f)
-                onsetAge = c; // an onset; the loop runs oldest to newest so the newest wins
-            previous = level;
-            // a hit trails off as a burst of lines rather than a single column
-            held = juce::jmax (level, held * 0.95f);
-            if (held < 0.002f)
-                continue;
-
-            const float x = bx + bw - 1.0f - (float) c;
-            const float strength = juce::jlimit (0.0f, 1.0f, std::sqrt (held));
-            // Which rows are lit depends on where this sample sits in the
-            // history, not on the screen column, so the lines move with the data.
-            const auto slot = (juce::uint32) ((writePos - c + ModularSynthProcessor::kHistoryLength * 4) / 6);
-            g.setColour (level > 1.0f ? look::red : look::ink.withAlpha (alpha));
-            for (int r = 0; r < rows; ++r)
-            {
-                const auto hash = (slot * 2654435761u) ^ ((juce::uint32) (r + 1) * 40503u * 2246822519u);
-                if ((float) ((hash >> 8) & 0xffu) / 255.0f < strength * 0.9f)
-                    g.fillRect (x, rowsArea.getY() + rowGap * ((float) r + 0.5f) - 0.5f, 1.0f, 1.5f);
-            }
-        }
-
-        g.setColour (look::dim);
-        g.drawRect (box, 1.0f);
-        g.setColour (look::ink.withAlpha (alpha));
-        g.fillRect (box.getX(), box.getY(), box.getWidth(), 3.0f);
-        if (onsetAge >= 0)
-        {
-            g.setColour (look::red);
-            g.fillRect (bx + bw - 1.0f - (float) onsetAge, box.getY() + 3.0f, 1.0f, box.getHeight() - 3.0f);
-        }
+        paintSignalBox (g, juce::Rectangle<float> (bx - 1.0f, y0 + 5.0f, bw + 2.0f, h - 10.0f), t, tr, alpha);
+        float lastPeak = 0.0f;
+        for (int c = 0; c < 8; ++c)
+            lastPeak = juce::jmax (lastPeak, proc.trackHistory (t, c));
         g.setFont (look::mono (9.0f));
         g.setColour (lastPeak > 1.0f ? look::red : look::dim);
         g.drawText (formatDb (lastPeak), juce::Rectangle<float> (bx - 66.0f, y0 + 4.0f, 60.0f, 12.0f), juce::Justification::topRight);
 
         paintToggle (g, geo.muteX, mid - 9.0f, geo.toggleW, "M", tr.mute, selected);
         paintToggle (g, geo.soloX, mid - 9.0f, geo.toggleW, "S", tr.solo, selected);
+    }
+
+    // The track's tuned pitch in Hz, or 0 for unpitched voices (clicks,
+    // noise, samples, voices tuned in semitones).
+    static float fundamentalHz (const TrackState& tr)
+    {
+        if (tr.voice == VoiceType::Sample)
+            return 0.0f;
+        for (int i = 0; i < kNumVoiceParams; ++i)
+            if (voiceParamIsPitch (tr.voice, tr.character, i) && voiceParamSteps (tr.voice, tr.character, i) == 0)
+                return voiceParamValue (tr.voice, tr.character, i, tr.voiceParams[(size_t) i]);
+        return 0.0f;
+    }
+
+    // A white (or coloured) label with black text, like the word boxes in
+    // the Datamatics installation. Returns its width.
+    static float paintTag (juce::Graphics& g, const juce::String& text, float x, float y, juce::Colour fill)
+    {
+        const auto font = look::mono (8.0f, true);
+        const float w = juce::GlyphArrangement::getStringWidth (font, text) + 5.0f;
+        g.setColour (fill);
+        g.fillRect (x, y, w, 9.0f);
+        g.setColour (look::background);
+        g.setFont (font);
+        g.drawText (text, juce::Rectangle<float> (x, y, w, 9.0f), juce::Justification::centred, false);
+        return w;
+    }
+
+    // Signal panel: an annotated harmonic lattice. A log frequency ruler
+    // (20 Hz - 20 kHz, a tick at every C) with the live spectrum, the
+    // harmonic series of the drum's pitch as dotted lines that light up when
+    // the sound has energy there, and the numbers as tags on top: note, pitch
+    // and measured phase on the fundamental (with a phase portrait under it),
+    // the spectral centroid, and peak / RMS / crest factor. The current
+    // sample's 16 bits run along the top.
+    void paintSignalBox (juce::Graphics& g, juce::Rectangle<float> box, int t, const TrackState& tr, float alpha)
+    {
+        auto& proc = editor.processor();
+        const double sr = proc.getEngineSampleRate();
+        proc.copyTrackScope (t, scopeBuf.data(), kFftSize);
+
+        // levels over the newest 256 samples
+        float peak = 0.0f, sumSq = 0.0f;
+        for (int i = kFftSize - 256; i < kFftSize; ++i)
+        {
+            peak = juce::jmax (peak, std::abs (scopeBuf[(size_t) i]));
+            sumSq += scopeBuf[(size_t) i] * scopeBuf[(size_t) i];
+        }
+        const float rms = std::sqrt (sumSq / 256.0f);
+        const bool live = rms > 0.002f;
+
+        // spectrum
+        for (int i = 0; i < kFftSize; ++i)
+        {
+            fftRe[(size_t) i] = scopeBuf[(size_t) i] * fftWindow[(size_t) i];
+            fftIm[(size_t) i] = 0.0f;
+        }
+        fft (fftRe.data(), fftIm.data(), kFftSize);
+        float magSum = 0.0f, freqSum = 0.0f;
+        for (int b = 1; b < kFftSize / 2; ++b)
+        {
+            const float m = std::hypot (fftRe[(size_t) b], fftIm[(size_t) b]) / (float) (kFftSize / 4);
+            mags[(size_t) b] = m;
+            magSum += m;
+            freqSum += m * (float) b * (float) sr / (float) kFftSize;
+        }
+        const float centroid = magSum > 1.0e-4f ? freqSum / magSum : 0.0f;
+
+        const auto area = box.reduced (1.0f).withTrimmedTop (5.0f);
+        const float x0 = area.getX(), w = area.getWidth(), top = area.getY() + 1.0f, base = area.getBottom() - 8.0f;
+        const auto xOf = [&] (double hz) { return x0 + (float) (std::log (hz / 20.0) / std::log (1000.0)) * w; };
+        // spectrum level 0..1 (-72 dB .. 0 dB) for the pixels around a frequency
+        const auto levelAt = [&] (double hzLo, double hzHi) {
+            const int lo = juce::jlimit (1, kFftSize / 2 - 1, (int) std::floor (hzLo * kFftSize / sr));
+            const int hi = juce::jlimit (lo, kFftSize / 2 - 1, (int) std::ceil (hzHi * kFftSize / sr));
+            float m = 0.0f;
+            for (int b = lo; b <= hi; ++b)
+                m = juce::jmax (m, mags[(size_t) b]);
+            return juce::jlimit (0.0f, 1.0f, (20.0f * std::log10 (m + 1.0e-9f) + 72.0f) / 72.0f);
+        };
+        const auto hzAt = [&] (float x) { return 20.0 * std::pow (1000.0, (double) ((x - x0) / w)); };
+
+        // octave ruler
+        g.setFont (look::mono (7.0f));
+        for (int octave = 1; octave <= 9; ++octave)
+        {
+            const float x = xOf (16.352 * std::pow (2.0, octave));
+            g.setColour (look::faint);
+            g.fillRect (x, top, 1.0f, area.getBottom() - top);
+            g.setColour (look::dim);
+            g.drawText ("C" + juce::String (octave), juce::Rectangle<float> (x + 2.0f, base, 20.0f, 8.0f), juce::Justification::centredLeft, false);
+        }
+
+        // live spectrum
+        if (live)
+        {
+            for (float x = x0; x < x0 + w; x += 1.0f)
+            {
+                const float v = levelAt (hzAt (x), hzAt (x + 1.0f));
+                if (v < 0.15f)
+                    continue;
+                g.setColour (look::ink.withAlpha (alpha * (0.2f + v * 0.55f)));
+                const float barH = v * (base - top - 6.0f);
+                g.fillRect (x, base - barH, 1.0f, barH);
+            }
+        }
+
+        // harmonic series of the drum's pitch
+        const float f0 = fundamentalHz (tr);
+        if (f0 > 0.0f)
+        {
+            for (int n = 1; n <= 32 && f0 * (float) n < 20000.0f; ++n)
+            {
+                const double f = f0 * (double) n;
+                const float x = xOf (f);
+                const bool lit = live && levelAt (f * 0.985, f * 1.015) > 0.55f;
+                g.setColour (n == 1 ? look::red.withAlpha (alpha) : lit ? look::ink.withAlpha (alpha) : look::faint.brighter (0.25f));
+                for (float y = top; y < base; y += 2.0f)
+                    g.fillRect (x, y, 1.0f, 1.0f);
+            }
+        }
+
+        if (live && centroid > 20.0f)
+        {
+            g.setColour (look::blue);
+            g.fillRect (xOf (centroid), top, 1.0f, base - top);
+        }
+
+        // the current sample's 16 bits along the top
+        {
+            const int bits = juce::roundToInt (juce::jlimit (-1.0f, 1.0f, scopeBuf[(size_t) kFftSize - 1]) * 32767.0f) & 0xffff;
+            const float cellW = box.getWidth() / 16.0f;
+            for (int b = 0; b < 16; ++b)
+            {
+                const bool on = ((bits >> (15 - b)) & 1) != 0;
+                g.setColour (on ? (b == 0 ? look::red : look::ink.withAlpha (alpha)) : look::faint);
+                g.fillRect (box.getX() + (float) b * cellW, box.getY() + 3.0f, cellW - 1.0f, 2.0f);
+            }
+        }
+
+        // tags
+        if (f0 > 0.0f)
+        {
+            char pitchText[32];
+            for (int i = 0; i < kNumVoiceParams; ++i)
+                if (voiceParamIsPitch (tr.voice, tr.character, i))
+                {
+                    formatVoiceParam (tr.voice, tr.character, i, tr.voiceParams[(size_t) i], pitchText, (int) sizeof (pitchText));
+                    break;
+                }
+            // phase of the fundamental as measured in the spectrum
+            const int bin = juce::jlimit (1, kFftSize / 2 - 1, juce::roundToInt (f0 * kFftSize / sr));
+            const auto phase = juce::String (live ? juce::roundToInt ((std::atan2 (fftIm[(size_t) bin], fftRe[(size_t) bin]) + juce::MathConstants<float>::pi) * 180.0f / juce::MathConstants<float>::pi) : 0)
+                               + juce::String (juce::CharPointer_UTF8 ("\xc2\xb0"));
+            const auto text = juce::String (pitchText) + "  " + (live ? phase : juce::String ("--"));
+            const float fx = xOf (f0);
+            const float tagW = juce::GlyphArrangement::getStringWidth (look::mono (8.0f, true), text) + 5.0f;
+            const float tx = fx + 2.0f + tagW < area.getRight() - 50.0f ? fx + 2.0f : fx - 2.0f - tagW;
+            paintTag (g, text, tx, top + 1.0f, look::red.withAlpha (alpha));
+            paintPhasePortrait (g, { tx, top + 12.0f, 22.0f, 22.0f }, f0, sr);
+        }
+        if (live && centroid > 20.0f)
+            paintTag (g, "CENT " + juce::String (juce::roundToInt (centroid)) + " Hz", juce::jmin (area.getRight() - 112.0f, xOf (centroid) + 2.0f), top + 23.0f, look::blue);
+
+        const auto dbText = [] (float v) { return v < 1.0e-5f ? juce::String ("-INF") : juce::String (gainToDb (v), 1); };
+        const juce::String readouts[] = { "PK " + dbText (peak), "RMS " + dbText (rms), "CRST " + (rms > 1.0e-4f ? juce::String (peak / rms, 1) : juce::String ("--")) };
+        float ry = top + 1.0f;
+        for (int i = 0; i < 3; ++i)
+        {
+            const float tw = juce::GlyphArrangement::getStringWidth (look::mono (8.0f, true), readouts[i]) + 5.0f;
+            paintTag (g, readouts[i], area.getRight() - tw - 1.0f, ry, i == 0 && peak > 1.0f ? look::red : look::ink.withAlpha (alpha));
+            ry += 11.0f;
+        }
+
+        g.setColour (look::dim);
+        g.drawRect (box, 1.0f);
+        g.setColour (look::ink.withAlpha (alpha));
+        g.fillRect (box.getX(), box.getY(), box.getWidth(), 3.0f);
+    }
+
+    // Each sample plotted against the sample a quarter cycle earlier: a pure
+    // tone draws a ring, distortion squares it off, noise is a cloud.
+    void paintPhasePortrait (juce::Graphics& g, juce::Rectangle<float> r, float f0, double sr)
+    {
+        g.setColour (look::background);
+        g.fillRect (r);
+        g.setColour (look::faint.brighter (0.3f));
+        g.drawRect (r, 1.0f);
+        g.fillRect (r.getX(), r.getCentreY(), r.getWidth(), 1.0f);
+        g.fillRect (r.getCentreX(), r.getY(), 1.0f, r.getHeight());
+
+        const int tau = juce::jlimit (1, 1000, juce::roundToInt (sr / f0 / 4.0));
+        float maxAbs = 1.0e-4f;
+        for (int i = kFftSize - 1200; i < kFftSize; ++i)
+            maxAbs = juce::jmax (maxAbs, std::abs (scopeBuf[(size_t) i]));
+        const float scale = r.getWidth() * 0.45f / maxAbs;
+        g.setColour (look::ink);
+        for (int i = kFftSize - 400; i < kFftSize; ++i)
+        {
+            const float a = scopeBuf[(size_t) i], b = scopeBuf[(size_t) (i - tau)];
+            if (std::abs (a) + std::abs (b) < 0.003f)
+                continue;
+            g.fillRect (r.getCentreX() + a * scale, r.getCentreY() - b * scale, 1.0f, 1.0f);
+        }
     }
 
     void paintMaster (juce::Graphics& g, const Geometry& geo, const ProjectState& state)
@@ -508,6 +712,10 @@ private:
     ModularSynthEditor& editor;
     std::array<int, kNumTracks> lastHits {};
     std::array<float, kNumTracks> flash {};
+    // signal panel analysis, reused every paint
+    static constexpr int kFftSize = 2048;
+    std::array<float, kFftSize> scopeBuf {}, fftRe {}, fftIm {}, fftWindow = makeHannWindow<(size_t) kFftSize>();
+    std::array<float, kFftSize / 2> mags {};
     float masterHold = 0.0f;
     DragMode dragMode = DragMode::None;
     int dragTrack = 0, dragStep = 0;
