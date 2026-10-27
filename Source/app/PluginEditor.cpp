@@ -291,31 +291,22 @@ private:
         g.drawText (text, box, juce::Justification::centred);
     }
 
-    // An active step drawn as a small barcode: more and longer bars = harder hit.
-    // The bar pattern is fixed per cell so it reads as data, not noise.
-    static void paintStepGlyph (juce::Graphics& g, juce::Rectangle<float> cell, float velocity, int seed, bool now, float alpha)
+    // An active step drawn as a white tag holding its velocity as a MIDI-style
+    // number (127 = full). The step under the playhead turns into an outline.
+    static void paintStepTag (juce::Graphics& g, juce::Rectangle<float> cell, float velocity, bool now, float alpha)
     {
-        if (now)
-        {
-            g.setColour (look::ink.withAlpha (alpha));
-            g.fillRect (cell);
-            return;
-        }
+        const float fontH = juce::jlimit (8.0f, 11.5f, cell.getWidth() / 1.9f);
+        const auto tag = cell.withSizeKeepingCentre (cell.getWidth(), juce::jmin (cell.getHeight(), fontH + 7.0f));
+        const auto label = look::pad (juce::jlimit (1, 127, juce::roundToInt (velocity * 127.0f)), 3);
 
-        const float mid = cell.getCentreY();
-        const float barH = juce::jmax (3.0f, cell.getHeight() * (0.25f + 0.75f * velocity));
-        const int bars = 2 + juce::roundToInt (velocity * 6.0f);
-        auto rng = (juce::uint32) seed * 2654435761u + 12345u;
-        float x = cell.getX();
-        g.setColour (look::ink.withAlpha (alpha * 0.92f));
-        for (int i = 0; i < bars && x < cell.getRight(); ++i)
-        {
-            rng = rng * 1664525u + 1013904223u;
-            const float w = 1.0f + (float) ((rng >> 24) % 3u);
-            g.fillRect (x, mid - barH * 0.5f, juce::jmin (w, cell.getRight() - x), barH);
-            x += w + 1.0f + (float) ((rng >> 16) % 3u);
-        }
-        g.fillRect (cell.getX(), mid - 0.5f, cell.getWidth(), 1.0f);
+        g.setColour (look::ink.withAlpha (alpha));
+        if (now)
+            g.drawRect (tag, 1.0f);
+        else
+            g.fillRect (tag);
+        g.setColour (now ? look::ink.withAlpha (alpha) : look::background);
+        g.setFont (look::mono (fontH, true));
+        g.drawText (label, tag, juce::Justification::centred, false);
     }
 
     void paintToggle (juce::Graphics& g, float x, float y, float w, const char* text, bool on, bool rowSelected)
@@ -381,28 +372,62 @@ private:
 
             const float v = tr.patterns[(size_t) pattern][(size_t) s];
             if (v > 0.0f)
-                paintStepGlyph (g, { x + 3.0f, y0 + 7.0f, geo.stepW - 6.0f, h - 16.0f }, v, t * 31 + s, s == playStep, alpha);
+                paintStepTag (g, { x + 2.0f, y0 + 7.0f, geo.stepW - 4.0f, h - 16.0f }, v, s == playStep, alpha);
         }
 
-        // barcode: the track's signal over time, newest on the right
+        // signal panel: the track's output as rows of data lines flowing left,
+        // newest on the right. Louder = more rows lit. A red cursor marks the
+        // latest hit while it travels across.
         const auto bx = geo.barcodeX, bw = geo.barcodeW;
+        const auto box = juce::Rectangle<float> (bx - 1.0f, y0 + 5.0f, bw + 2.0f, h - 10.0f);
+        const auto rowsArea = box.reduced (2.0f).withTrimmedTop (4.0f);
+        const int rows = juce::jmax (4, (int) (rowsArea.getHeight() / 4.0f));
+        const float rowGap = rowsArea.getHeight() / (float) rows;
+
+        g.setColour (look::faint);
+        for (int r = 0; r < rows; ++r)
+            g.fillRect (rowsArea.getX(), rowsArea.getY() + rowGap * ((float) r + 0.5f), rowsArea.getWidth(), 1.0f);
+
         const int columns = (int) bw;
-        float lastPeak = 0.0f;
-        for (int c = 0; c < columns; ++c)
+        const int writePos = proc.historyWritePosition();
+        float lastPeak = 0.0f, previous = 0.0f, held = 0.0f;
+        int onsetAge = -1;
+        for (int c = columns - 1; c >= 0; --c)
         {
             const float level = proc.trackHistory (t, c);
             if (c < 8)
                 lastPeak = juce::jmax (lastPeak, level);
-            if (level < 0.002f)
+            if (level > 0.05f && level > previous * 2.0f)
+                onsetAge = c; // an onset; the loop runs oldest to newest so the newest wins
+            previous = level;
+            // a hit trails off as a burst of lines rather than a single column
+            held = juce::jmax (level, held * 0.95f);
+            if (held < 0.002f)
                 continue;
+
             const float x = bx + bw - 1.0f - (float) c;
-            const float strength = juce::jlimit (0.0f, 1.0f, std::sqrt (level));
-            g.setColour (level > 1.0f ? look::red : look::ink.withAlpha (alpha * juce::jmax (0.3f, strength)));
-            const float barH = h - 12.0f;
-            g.fillRect (x, y0 + 6.0f + (1.0f - strength) * barH * 0.5f, level > 0.25f ? 2.0f : 1.0f, barH * (0.35f + strength * 0.65f));
+            const float strength = juce::jlimit (0.0f, 1.0f, std::sqrt (held));
+            // Which rows are lit depends on where this sample sits in the
+            // history, not on the screen column, so the lines move with the data.
+            const auto slot = (juce::uint32) ((writePos - c + ModularSynthProcessor::kHistoryLength * 4) / 6);
+            g.setColour (level > 1.0f ? look::red : look::ink.withAlpha (alpha));
+            for (int r = 0; r < rows; ++r)
+            {
+                const auto hash = (slot * 2654435761u) ^ ((juce::uint32) (r + 1) * 40503u * 2246822519u);
+                if ((float) ((hash >> 8) & 0xffu) / 255.0f < strength * 0.9f)
+                    g.fillRect (x, rowsArea.getY() + rowGap * ((float) r + 0.5f) - 0.5f, 1.0f, 1.5f);
+            }
         }
-        g.setColour (look::faint);
-        g.drawRect (juce::Rectangle<float> (bx - 1.0f, y0 + 5.0f, bw + 2.0f, h - 10.0f), 1.0f);
+
+        g.setColour (look::dim);
+        g.drawRect (box, 1.0f);
+        g.setColour (look::ink.withAlpha (alpha));
+        g.fillRect (box.getX(), box.getY(), box.getWidth(), 3.0f);
+        if (onsetAge >= 0)
+        {
+            g.setColour (look::red);
+            g.fillRect (bx + bw - 1.0f - (float) onsetAge, box.getY() + 3.0f, 1.0f, box.getHeight() - 3.0f);
+        }
         g.setFont (look::mono (9.0f));
         g.setColour (lastPeak > 1.0f ? look::red : look::dim);
         g.drawText (formatDb (lastPeak), juce::Rectangle<float> (bx - 66.0f, y0 + 4.0f, 60.0f, 12.0f), juce::Justification::topRight);
