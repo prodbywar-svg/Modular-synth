@@ -15,6 +15,7 @@ class ModularSynthProcessor : public juce::AudioProcessor
 public:
     static constexpr int kHistoryLength = 512;  // barcode history per track
     static constexpr int kHistoryWindow = 256;  // samples per history entry
+    static constexpr int kScopeLength = 4096;   // raw samples kept per track
 
     ModularSynthProcessor();
     ~ModularSynthProcessor() override = default;
@@ -55,6 +56,9 @@ public:
     // history entry age 0 = newest
     float trackHistory (int t, int age) const;
     int historyWritePosition() const { return historyPos.load(); }
+    // A track's raw output, age 0 = newest sample. Copies the newest `count`
+    // samples (count <= kScopeLength) into dest, oldest first.
+    void copyTrackScope (int t, float* dest, int count) const;
     // Increments every time the track is hit, so the UI can flash it.
     int trackHitCount (int t) const { return hitCounts[(size_t) t].load(); }
 
@@ -118,6 +122,8 @@ private:
     std::array<std::atomic<int>, ms::kNumTracks> hitCounts {};
     std::vector<std::atomic<float>> history = std::vector<std::atomic<float>> (ms::kNumTracks * kHistoryLength);
     std::atomic<int> historyPos { 0 };
+    std::vector<std::atomic<float>> scopeSamples = std::vector<std::atomic<float>> (ms::kNumTracks * kScopeLength);
+    std::atomic<int> scopePos { 0 };
     std::array<float, ms::kNumTracks> windowPeak {};
     int windowFill = 0;
 

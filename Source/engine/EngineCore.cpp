@@ -12,6 +12,7 @@ void EngineCore::prepare (double sampleRate, int maxBlockSize)
     voiceBuf.assign ((size_t) (kNumTracks * maxBlock), 0.0f);
     trackL.assign ((size_t) maxBlock, 0.0f);
     trackR.assign ((size_t) maxBlock, 0.0f);
+    taps.assign ((size_t) (kNumTracks * maxBlock), 0.0f);
 
     for (auto& v : voices)
         v.prepare (sr);
@@ -189,6 +190,9 @@ void EngineCore::process (float* left, float* right, int numSamples)
 
             const bool audible = trackAudible (t);
             peaks[(size_t) t] = audible ? peak : 0.0f;
+            float* tap = taps.data() + t * maxBlock;
+            for (int i = 0; i < n; ++i)
+                tap[i] = audible ? 0.5f * (trackL[(size_t) i] + trackR[(size_t) i]) : 0.0f;
 
             if (audible && (soloRender < 0 || soloRender == t))
             {

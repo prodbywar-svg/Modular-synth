@@ -180,6 +180,16 @@ float ModularSynthProcessor::trackHistory (int t, int age) const
     return history[(size_t) (t * kHistoryLength + pos)].load (std::memory_order_relaxed);
 }
 
+void ModularSynthProcessor::copyTrackScope (int t, float* dest, int count) const
+{
+    const int end = scopePos.load();
+    for (int i = 0; i < count; ++i)
+    {
+        const int pos = (end - count + i + kScopeLength * 4) % kScopeLength;
+        dest[i] = scopeSamples[(size_t) (t * kScopeLength + pos)].load (std::memory_order_relaxed);
+    }
+}
+
 // ---- audio thread -----------------------------------------------------------
 
 void ModularSynthProcessor::prepareToPlay (double sampleRate, int)
@@ -310,6 +320,15 @@ void ModularSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
                 hitCounts[(size_t) t].fetch_add (1, std::memory_order_relaxed);
         }
         engine.clearTriggered();
+
+        const int scopeStart = scopePos.load (std::memory_order_relaxed);
+        for (int t = 0; t < kNumTracks; ++t)
+        {
+            const float* out = engine.trackOutput (t);
+            for (int i = 0; i < n; ++i)
+                scopeSamples[(size_t) (t * kScopeLength + (scopeStart + i) % kScopeLength)].store (out[i], std::memory_order_relaxed);
+        }
+        scopePos.store ((scopeStart + n) % kScopeLength);
 
         if (windowFill >= kHistoryWindow)
         {
