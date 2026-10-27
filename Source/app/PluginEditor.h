@@ -25,6 +25,12 @@ public:
     void showVoiceMenu (int track);
     void setStatus (const juce::String&);
 
+    // Sequence clipboard: one drum's steps, or every drum in the pattern on
+    // screen. Paste writes whichever was copied into the pattern on screen.
+    void copySequence (bool wholePattern);
+    void pasteSequence();
+    void randomizeSequence (int track);
+
 private:
     void timerCallback() override;
 
@@ -39,7 +45,8 @@ private:
     void selectPattern (int pattern);
     void copyPatternTo (int pattern); // copies the pattern on screen
     void clearPattern();              // empties the pattern on screen, resets all effects
-    void undoClear();
+    void undo();                      // takes back the last clear, paste or random
+
     void hitPad (int track, float velocity);
 
     ModularSynthProcessor& proc;
@@ -57,14 +64,25 @@ private:
     std::array<juce::uint32, ms::kNumTracks> lastPadKeyTime {};
     bool keyboardFocusRequested = false;
 
-    struct ClearedPattern
+    // What a clear / paste / random replaced, so Ctrl+Z can put it back.
+    struct UndoSnapshot
     {
         int pattern = 0;
         std::array<ms::Pattern, ms::kNumTracks> steps {};
+        bool hasFx = false;
         std::array<ms::FxParams, ms::kNumTracks> fx {};
         ms::FxParams masterFx {};
     };
-    std::optional<ClearedPattern> lastCleared; // for Ctrl+Z
+    UndoSnapshot takeSnapshot (int pattern, bool withFx) const;
+    std::optional<UndoSnapshot> lastUndo;
+
+    struct SequenceClipboard
+    {
+        bool wholePattern = false;
+        std::array<ms::Pattern, ms::kNumTracks> steps {}; // [0] holds a single track
+        juce::String source;
+    };
+    std::optional<SequenceClipboard> clipboard;
 
     juce::String status;
     juce::uint32 statusTime = 0;

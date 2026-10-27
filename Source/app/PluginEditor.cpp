@@ -503,6 +503,15 @@ public:
                 editor.showVoiceMenu (editor.selectedTrack());
         };
 
+        addAndMakeVisible (copyButton);
+        addAndMakeVisible (copyPatternButton);
+        addAndMakeVisible (pasteButton);
+        addAndMakeVisible (randomButton);
+        copyButton.onClick = [this] { editor.copySequence (false); };
+        copyPatternButton.onClick = [this] { editor.copySequence (true); };
+        pasteButton.onClick = [this] { editor.pasteSequence(); };
+        randomButton.onClick = [this] { editor.randomizeSequence (editor.selectedTrack()); };
+
         for (int c = 0; c < kNumCharacters; ++c)
         {
             auto& b = characterButtons[(size_t) c];
@@ -575,6 +584,9 @@ public:
             shownVoice = voiceType;
             shownCharacter = character;
             typeButton.setVisible (! master);
+            randomButton.setVisible (! master);
+            copyButton.setVisible (! master);
+            resized();
             for (int c = 0; c < kNumCharacters; ++c)
             {
                 characterButtons[(size_t) c].setVisible (! master);
@@ -643,8 +655,8 @@ public:
         const char* groups[] = { "VOICE + MIX", "CRUSH > DISTORT > FILTER", "DELAY > REVERB", "GRAIN DELAY", "PSYCHOSIS // OTT x 6" };
         for (int c = 0; c < kColumns; ++c)
             g.drawText (groups[c], columnX (c), 30, columnX (1) - 24, 14, juce::Justification::centredLeft);
-        g.drawText ("DRAG / SHIFT FINE / ALT OFF-NOTE / DOUBLE-CLICK RESET", getWidth() / 2, 6, getWidth() / 2, 18,
-                    juce::Justification::centredRight);
+        g.drawFittedText ("DRAG / SHIFT FINE / ALT OFF-NOTE / DOUBLE-CLICK RESET",
+                          juce::Rectangle<int> (columnX (0), 48 + 6 * 20 + 18, columnX (1) - 24, 28), juce::Justification::topLeft, 2);
     }
 
     void resized() override
@@ -652,7 +664,7 @@ public:
         const int rowH = 20, y0 = 48;
         const int colW = columnX (1) - columnX (0) - 24;
 
-        auto top = juce::Rectangle<int> (columnX (1), 4, 400, 20);
+        auto top = juce::Rectangle<int> (columnX (1), 4, getWidth() - columnX (1), 20);
         typeButton.setBounds (top.removeFromLeft (150));
         top.removeFromLeft (12);
         for (auto& b : characterButtons)
@@ -660,6 +672,22 @@ public:
             b.setBounds (top.removeFromLeft (70));
             top.removeFromLeft (4);
         }
+        // sequence tools: right after the characters on a track; where the
+        // track buttons would be on the master
+        if (editor.selectedTrack() < 0)
+            top = juce::Rectangle<int> (columnX (1), 4, getWidth() - columnX (1), 20);
+        else
+            top.removeFromLeft (20);
+        if (editor.selectedTrack() >= 0)
+        {
+            copyButton.setBounds (top.removeFromLeft (92));
+            top.removeFromLeft (4);
+        }
+        copyPatternButton.setBounds (top.removeFromLeft (112));
+        top.removeFromLeft (4);
+        pasteButton.setBounds (top.removeFromLeft (64));
+        top.removeFromLeft (4);
+        randomButton.setBounds (top.removeFromLeft (76));
 
         for (int i = 0; i < kNumVoiceParams; ++i)
             voice[(size_t) i].setBounds (columnX (0), y0 + i * rowH, colW, rowH);
@@ -698,6 +726,7 @@ private:
 
     ModularSynthEditor& editor;
     DataButton typeButton { "TYPE" };
+    DataButton copyButton { "COPY DRUM" }, copyPatternButton { "COPY PATTERN" }, pasteButton { "PASTE" }, randomButton { "RANDOM" };
     std::array<DataButton, kNumCharacters> characterButtons { DataButton { "LIVE" }, DataButton { "DIGITAL" }, DataButton { "HR-16" } };
     std::array<DataSlider, kNumVoiceParams> voice;
     DataSlider level, pan;
@@ -861,11 +890,26 @@ void ModularSynthEditor::showVoiceMenu (int track)
         for (int c = 0; c < kNumCharacters; ++c)
             m.addItem (200 + c, characterName ((Character) c), true, tr.character == (Character) c);
     }
+    m.addSectionHeader ("SEQUENCE");
+    m.addItem (300, "COPY THIS DRUM  (CTRL+C)");
+    m.addItem (303, "COPY WHOLE PATTERN  (CTRL+SHIFT+C)");
+    m.addItem (301, "PASTE  (CTRL+V)", clipboard.has_value());
+    m.addItem (302, "RANDOM  (CTRL+R)");
     m.addSeparator();
     m.addItem (100, "LOAD SAMPLE...");
 
     m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(), [this, track] (int r) {
-        if (r == 100)
+        if (r >= 300)
+            selectTrack (track);
+        if (r == 300)
+            copySequence (false);
+        else if (r == 303)
+            copySequence (true);
+        else if (r == 301)
+            pasteSequence();
+        else if (r == 302)
+            randomizeSequence (track);
+        else if (r == 100)
             loadSampleInto (track);
         else if (r >= 200)
             send (CommandType::SetCharacter, track, r - 200, 0.0f);
@@ -924,6 +968,21 @@ void ModularSynthEditor::copyPatternTo (int pattern)
     setStatus ("COPIED P" + juce::String (from + 1) + " TO P" + juce::String (pattern + 1));
 }
 
+ModularSynthEditor::UndoSnapshot ModularSynthEditor::takeSnapshot (int pattern, bool withFx) const
+{
+    const auto& state = proc.getUiState();
+    UndoSnapshot snap;
+    snap.pattern = pattern;
+    snap.hasFx = withFx;
+    snap.masterFx = state.masterFx;
+    for (int t = 0; t < kNumTracks; ++t)
+    {
+        snap.steps[(size_t) t] = state.tracks[(size_t) t].patterns[(size_t) pattern];
+        snap.fx[(size_t) t] = state.tracks[(size_t) t].fx;
+    }
+    return snap;
+}
+
 void ModularSynthEditor::clearPattern()
 {
     // Empties the pattern on screen and puts every effects rack (the 8 tracks
@@ -931,18 +990,13 @@ void ModularSynthEditor::clearPattern()
     const auto& state = proc.getUiState();
     const int pattern = viewedPattern (state);
     const auto defaults = defaultFxParams();
+    const auto before = takeSnapshot (pattern, true);
 
-    ClearedPattern undo;
-    undo.pattern = pattern;
-    undo.masterFx = state.masterFx;
-    bool changed = state.masterFx != defaults;
+    bool changed = before.masterFx != defaults;
     for (int t = 0; t < kNumTracks; ++t)
     {
-        const auto& tr = state.tracks[(size_t) t];
-        undo.steps[(size_t) t] = tr.patterns[(size_t) pattern];
-        undo.fx[(size_t) t] = tr.fx;
-        changed = changed || tr.fx != defaults;
-        for (float v : tr.patterns[(size_t) pattern])
+        changed = changed || before.fx[(size_t) t] != defaults;
+        for (float v : before.steps[(size_t) t])
             changed = changed || v > 0.0f;
     }
     if (! changed)
@@ -951,36 +1005,153 @@ void ModularSynthEditor::clearPattern()
     for (int t = 0; t < kNumTracks; ++t)
     {
         for (int s = 0; s < kNumSteps; ++s)
-            if (undo.steps[(size_t) t][(size_t) s] > 0.0f)
+            if (before.steps[(size_t) t][(size_t) s] > 0.0f)
                 send (CommandType::SetStep, t, pattern * kNumSteps + s, 0.0f);
         for (int i = 0; i < kNumFxParams; ++i)
-            if (! juce::exactlyEqual (undo.fx[(size_t) t][(size_t) i], defaults[(size_t) i]))
+            if (! juce::exactlyEqual (before.fx[(size_t) t][(size_t) i], defaults[(size_t) i]))
                 send (CommandType::SetFxParam, t, i, defaults[(size_t) i]);
     }
     for (int i = 0; i < kNumFxParams; ++i)
-        if (! juce::exactlyEqual (undo.masterFx[(size_t) i], defaults[(size_t) i]))
+        if (! juce::exactlyEqual (before.masterFx[(size_t) i], defaults[(size_t) i]))
             send (CommandType::SetFxParam, -1, i, defaults[(size_t) i]);
 
-    lastCleared = undo;
+    lastUndo = before;
     setStatus ("CLEARED P" + juce::String (pattern + 1) + " + RESET ALL EFFECTS / CTRL+Z TO BRING IT BACK");
 }
 
-void ModularSynthEditor::undoClear()
+void ModularSynthEditor::undo()
 {
-    if (! lastCleared.has_value())
+    if (! lastUndo.has_value())
+    {
+        setStatus ("NOTHING TO UNDO");
         return;
-    const auto& undo = *lastCleared;
+    }
+    const auto& snap = *lastUndo;
+    const auto& state = proc.getUiState();
     for (int t = 0; t < kNumTracks; ++t)
     {
+        const auto& now = state.tracks[(size_t) t].patterns[(size_t) snap.pattern];
         for (int s = 0; s < kNumSteps; ++s)
-            send (CommandType::SetStep, t, undo.pattern * kNumSteps + s, undo.steps[(size_t) t][(size_t) s]);
-        for (int i = 0; i < kNumFxParams; ++i)
-            send (CommandType::SetFxParam, t, i, undo.fx[(size_t) t][(size_t) i]);
+            if (! juce::exactlyEqual (now[(size_t) s], snap.steps[(size_t) t][(size_t) s]))
+                send (CommandType::SetStep, t, snap.pattern * kNumSteps + s, snap.steps[(size_t) t][(size_t) s]);
+        if (snap.hasFx)
+            for (int i = 0; i < kNumFxParams; ++i)
+                send (CommandType::SetFxParam, t, i, snap.fx[(size_t) t][(size_t) i]);
     }
-    for (int i = 0; i < kNumFxParams; ++i)
-        send (CommandType::SetFxParam, -1, i, undo.masterFx[(size_t) i]);
-    setStatus ("RESTORED P" + juce::String (undo.pattern + 1) + " AND THE EFFECTS");
-    lastCleared.reset();
+    if (snap.hasFx)
+        for (int i = 0; i < kNumFxParams; ++i)
+            send (CommandType::SetFxParam, -1, i, snap.masterFx[(size_t) i]);
+    setStatus ("UNDONE / P" + juce::String (snap.pattern + 1) + (snap.hasFx ? " AND THE EFFECTS RESTORED" : " RESTORED"));
+    lastUndo.reset();
+}
+
+void ModularSynthEditor::copySequence (bool wholePattern)
+{
+    const auto& state = proc.getUiState();
+    const int pattern = viewedPattern (state);
+    SequenceClipboard clip;
+    clip.wholePattern = wholePattern || selected < 0;
+    if (clip.wholePattern)
+    {
+        for (int t = 0; t < kNumTracks; ++t)
+            clip.steps[(size_t) t] = state.tracks[(size_t) t].patterns[(size_t) pattern];
+        clip.source = "P" + juce::String (pattern + 1);
+    }
+    else
+    {
+        clip.steps[0] = state.tracks[(size_t) selected].patterns[(size_t) pattern];
+        clip.source = look::pad (selected + 1, 2) + " " + proc.trackName (selected) + " P" + juce::String (pattern + 1);
+    }
+    clipboard = clip;
+    setStatus ("COPIED " + clip.source + (clip.wholePattern ? " (ALL TRACKS)" : "")
+               + " / PICK A " + (clip.wholePattern ? "PATTERN (P1-P4)" : "DRUM OR PATTERN") + " AND PASTE (CTRL+V)");
+}
+
+void ModularSynthEditor::pasteSequence()
+{
+    if (! clipboard.has_value())
+    {
+        setStatus ("NOTHING COPIED YET / SELECT A TRACK AND PRESS COPY (CTRL+C)");
+        return;
+    }
+    const int pattern = viewedPattern (proc.getUiState());
+    const auto& clip = *clipboard;
+    lastUndo = takeSnapshot (pattern, false);
+
+    auto write = [this, pattern] (int track, const Pattern& steps) {
+        const auto& now = proc.getUiState().tracks[(size_t) track].patterns[(size_t) pattern];
+        for (int s = 0; s < kNumSteps; ++s)
+            if (! juce::exactlyEqual (now[(size_t) s], steps[(size_t) s]))
+                send (CommandType::SetStep, track, pattern * kNumSteps + s, steps[(size_t) s]);
+    };
+
+    if (clip.wholePattern)
+    {
+        for (int t = 0; t < kNumTracks; ++t)
+            write (t, clip.steps[(size_t) t]);
+        setStatus ("PASTED " + clip.source + " INTO P" + juce::String (pattern + 1) + " / CTRL+Z TO UNDO");
+    }
+    else if (selected >= 0)
+    {
+        write (selected, clip.steps[0]);
+        setStatus ("PASTED " + clip.source + " INTO " + look::pad (selected + 1, 2) + " " + proc.trackName (selected)
+                   + " P" + juce::String (pattern + 1) + " / CTRL+Z TO UNDO");
+    }
+    else
+    {
+        lastUndo.reset();
+        setStatus ("SELECT A TRACK TO PASTE ONE SEQUENCE INTO");
+    }
+}
+
+void ModularSynthEditor::randomizeSequence (int track)
+{
+    if (track < 0 || track >= kNumTracks)
+        return;
+    const auto& state = proc.getUiState();
+    const int pattern = viewedPattern (state);
+    const auto voice = state.tracks[(size_t) track].voice;
+    lastUndo = takeSnapshot (pattern, false);
+
+    // Chance of a hit on each step, shaped by what the drum is so the result
+    // sits in a groove: kicks lean on the beat, hats run, snares find the
+    // backbeat, everything else is sparse.
+    auto chance = [voice] (int s) {
+        const bool beat = s % 4 == 0, eighth = s % 2 == 0;
+        switch (voice)
+        {
+            case VoiceType::Kick:       return s == 0 ? 1.0f : beat ? 0.55f : eighth ? 0.2f : 0.12f;
+            case VoiceType::ClickHat:   return eighth ? 0.8f : 0.45f;
+            case VoiceType::NoiseSnare: return (s == 4 || s == 12) ? 0.8f : beat ? 0.1f : 0.14f;
+            case VoiceType::SineTone:
+            case VoiceType::Glitch:
+            case VoiceType::Sample:
+            case VoiceType::Count:      break;
+        }
+        return beat ? 0.3f : 0.2f;
+    };
+
+    auto& rng = juce::Random::getSystemRandom();
+    Pattern steps {};
+    int hits = 0;
+    while (hits == 0)
+    {
+        for (int s = 0; s < kNumSteps; ++s)
+        {
+            steps[(size_t) s] = 0.0f;
+            if (rng.nextFloat() < chance (s))
+            {
+                const float accent = s % 4 == 0 ? 0.25f : 0.0f;
+                steps[(size_t) s] = juce::jlimit (0.3f, 1.0f, 0.45f + accent + rng.nextFloat() * 0.45f);
+                ++hits;
+            }
+        }
+    }
+
+    for (int s = 0; s < kNumSteps; ++s)
+        send (CommandType::SetStep, track, pattern * kNumSteps + s, steps[(size_t) s]);
+    setStatus ("RANDOM " + look::pad (track + 1, 2) + " " + proc.trackName (track) + " P" + juce::String (pattern + 1)
+               + " / PRESS AGAIN FOR ANOTHER / CTRL+Z TO UNDO");
 }
 
 void ModularSynthEditor::togglePlay()
@@ -1118,7 +1289,10 @@ bool ModularSynthEditor::keyPressed (const juce::KeyPress& key)
     {
         if (key.getKeyCode() == 'S') { saveProject(); return true; }
         if (key.getKeyCode() == 'O') { openProject(); return true; }
-        if (key.getKeyCode() == 'Z') { undoClear(); return true; }
+        if (key.getKeyCode() == 'Z') { undo(); return true; }
+        if (key.getKeyCode() == 'C') { copySequence (mods.isShiftDown()); return true; }
+        if (key.getKeyCode() == 'V') { pasteSequence(); return true; }
+        if (key.getKeyCode() == 'R') { randomizeSequence (selected); return true; }
         return false;
     }
 
@@ -1262,7 +1436,7 @@ void ModularSynthEditor::paint (juce::Graphics& g)
     g.setColour (proc.isRecording() ? look::red : look::ink);
     g.drawText (fresh ? status : juce::String ("READY"), statusArea, juce::Justification::centredLeft, true);
     g.setColour (look::dim);
-    g.drawText ("SPACE PLAY  R REC  E EXPORT  1-8 / A-K PADS  F1-F4 PATTERN (SHIFT = COPY HERE)  DEL CLEAR  DRAG STEP = VELOCITY  RIGHT-CLICK NAME = VOICE",
+    g.drawText ("SPACE PLAY  R REC  E EXPORT  1-8 / A-K PADS  F1-F4 PATTERN  CTRL+C/V COPY/PASTE (+SHIFT = WHOLE PATTERN)  CTRL+R RANDOM  DEL CLEAR  DRAG STEP = VELOCITY  RIGHT-CLICK NAME = VOICE",
                 statusArea, juce::Justification::centredRight, true);
 }
 

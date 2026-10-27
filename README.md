@@ -21,10 +21,14 @@ WAV plus one WAV per instrument.
 | Click a step | switch it on or off; drag up/down on a lit step to set how hard it hits |
 | **P1**-**P4** / `F1`-`F4` | pick a pattern. While playing, the new one waits until the current pattern ends (outlined in blue while it waits) |
 | **CLEAR** / `Delete` | empty the pattern on screen and reset every effect (tracks and master) to its default (`Ctrl+Z` brings it all back) |
+| **COPY DRUM**, then **PASTE** (bottom panel), or `Ctrl+C` / `Ctrl+V` | copy the selected drum's sequence, then select another drum (or switch pattern) and paste it there |
+| **COPY PATTERN**, then **PASTE**, or `Ctrl+Shift+C` / `Ctrl+V` | duplicate every drum's sequence: copy on P1, switch to P2, paste |
+| **RANDOM** (bottom panel) or `Ctrl+R` | write a fresh random sequence for the selected drum on the pattern on screen; press again for another. Kicks lean on the beat, hats run, snares find the backbeat |
+| `Ctrl+Z` | undo the last clear, paste or random |
 | `Shift`+click **P1**-**P4** / `Shift`+`F1`-`F4` | copy the pattern on screen into that slot |
 | Click the number box (01-08), or press `1`-`8` / `A S D F G H J K` | hit a pad live (`Shift` = softer) |
 | Click a track name | show its controls in the bottom panel |
-| Right-click a track name | change its voice or character, or load your own sample |
+| Right-click a track name | change its voice or character, copy / paste / randomize its sequence, or load your own sample |
 | **LIVE** / **DIGITAL** / **HR-16** (bottom panel) | switch the selected drum's character |
 | Drag a control left/right | change it (`Shift` = fine, double-click = reset). Pitch controls snap to notes; hold `Alt` to go between them |
 | **MS** / **NOTE** switches | set a time control in milliseconds or in note lengths that follow the tempo |
