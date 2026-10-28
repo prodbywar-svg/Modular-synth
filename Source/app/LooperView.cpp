@@ -363,12 +363,15 @@ private:
         if (recordingHere)
         {
             const bool waiting = readout.status == LooperEngine::Status::Waiting;
+            const bool counting = readout.status == LooperEngine::Status::CountIn;
             g.setColour (look::red.withAlpha (0.25f));
             g.fillRect (area.withWidth (area.getWidth() * (float) readout.progress));
             g.setColour (look::red);
             g.drawRect (area.expanded (2.0f), 1.0f);
-            paintTag (g, waiting ? (readout.overdub ? "OVERDUB // NEXT BAR" : "REC // NEXT BAR")
-                                 : (readout.overdub ? "OVERDUB " : "REC ") + juce::String (juce::roundToInt (readout.progress * 100.0)) + "%",
+            const juce::String what = readout.overdub ? "OVERDUB" : "REC";
+            paintTag (g, waiting    ? what + " // NEXT BAR"
+                         : counting ? what + " // COUNT-IN " + juce::String (readout.countBeats)
+                                    : what + " " + juce::String (juce::roundToInt (readout.progress * 100.0)) + "%",
                       area.getX() + 4.0f, area.getY() + 2.0f, look::red);
         }
 
@@ -656,7 +659,8 @@ LooperView::LooperView (ModularSynthProcessor& p, int t) : proc (p), tool (t)
     addAndMakeVisible (*grid);
     addAndMakeVisible (*panel);
 
-    for (auto* b : { &recButton, &overdubButton, &barsButton, &inputButton, &monitorButton, &clearButton, &resetButton, &autoButton })
+    for (auto* b : { &recButton, &overdubButton, &barsButton, &countButton, &inputButton, &monitorButton, &dryButton, &clearButton,
+                     &resetButton, &autoButton })
         addAndMakeVisible (*b);
     recButton.setAccent (look::red);
     overdubButton.setAccent (look::red);
@@ -666,6 +670,8 @@ LooperView::LooperView (ModularSynthProcessor& p, int t) : proc (p), tool (t)
     barsButton.onClick = [this] { showBarsMenu(); };
     inputButton.onClick = [this] { showInputMenu(); };
     monitorButton.onClick = [this] { toggleMonitor(); };
+    dryButton.onClick = [this] { toggleMonitorDry(); };
+    countButton.onClick = [this] { showCountInMenu(); };
     clearButton.onClick = [this] { clearSlot(); };
     resetButton.onClick = [this] { resetToDefaults(); };
     autoButton.onClick = [this] {
@@ -749,7 +755,9 @@ void LooperView::recordLoop (bool overdub)
         proc.send (play);
     }
 
-    const juce::String when = wasPlaying ? "FROM THE NEXT BAR" : "FROM NOW";
+    const int count = state().countIn;
+    const juce::String when = (wasPlaying ? juce::String ("FROM THE NEXT BAR") : juce::String ("FROM NOW"))
+                              + (count > 0 ? " AFTER " + barsText (count) + " OF COUNT-IN" : juce::String());
     if (onTop)
         setStatus ("OVERDUB P" + juce::String (slot + 1) + " " + when + ", ONCE ROUND " + barsText (ls.audio->bars)
                    + " // CTRL+Z TAKES THE LAYER OFF");
@@ -763,8 +771,37 @@ void LooperView::toggleMonitor()
 {
     const bool on = ! state().monitor;
     send (CommandType::SetLoopMonitor, 0, 0, on ? 1.0f : 0.0f);
-    setStatus (on ? "MONITOR ON // THE INPUT PLAYS THROUGH THE LOOPER'S RACK (HEADPHONES AVOID FEEDBACK)"
+    setStatus (on ? (state().monitorDry ? "MONITOR ON // YOU HEAR THE INPUT DRY (FX BUTTON = THROUGH THE RACK) // HEADPHONES AVOID FEEDBACK"
+                                        : "MONITOR ON // YOU HEAR THE INPUT THROUGH THE LOOPER'S RACK (DRY BUTTON = DRY) // HEADPHONES AVOID FEEDBACK")
                   : "MONITOR OFF // THE INPUT IS ONLY RECORDED");
+}
+
+void LooperView::toggleMonitorDry()
+{
+    // Only what you hear changes: recordings are always dry, the loop then
+    // plays through the rack.
+    const bool dry = ! state().monitorDry;
+    send (CommandType::SetMonitorDry, 0, 0, dry ? 1.0f : 0.0f);
+    if (! state().monitor)
+        send (CommandType::SetLoopMonitor, 0, 0, 1.0f);
+    setStatus (dry ? "MONITOR DRY // YOU HEAR THE INPUT AS IT COMES IN, WITHOUT THE RACK (SHIFT+M SWITCHES)"
+                   : "MONITOR FX // YOU HEAR THE INPUT THROUGH THE LOOPER'S RACK (SHIFT+M SWITCHES)");
+}
+
+void LooperView::showCountInMenu()
+{
+    juce::PopupMenu m;
+    m.addSectionHeader ("COUNT-IN // CLICKS BEFORE A RECORDING STARTS");
+    for (int bars : kCountIns)
+        m.addItem (bars + 1, bars == 0 ? juce::String ("OFF") : barsText (bars), true, state().countIn == bars);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&countButton), [this] (int r) {
+        if (r <= 0)
+            return;
+        const int bars = r - 1;
+        send (CommandType::SetCountIn, 0, 0, (float) bars);
+        setStatus (bars == 0 ? "COUNT-IN OFF // RECORDING STARTS ON THE BAR"
+                             : "COUNT-IN " + barsText (bars) + " // CLICKS ON THE BEATS, THEN IT RECORDS (THE CLICK IS NEVER RECORDED OR EXPORTED)");
+    });
 }
 
 void LooperView::showInputMenu()
@@ -936,6 +973,8 @@ void LooperView::applyLooper (const Snapshot& target, bool slots)
             send (type, track, index, wanted);
     };
     set (CommandType::SetLoopMonitor, 0, 0, now.monitor ? 1.0f : 0.0f, want.monitor ? 1.0f : 0.0f);
+    set (CommandType::SetMonitorDry, 0, 0, now.monitorDry ? 1.0f : 0.0f, want.monitorDry ? 1.0f : 0.0f);
+    set (CommandType::SetCountIn, 0, 0, (float) now.countIn, (float) want.countIn);
     set (CommandType::SetInputGain, 0, 0, now.inputGain, want.inputGain);
     set (CommandType::SetMasterLevel, 0, 0, now.masterLevel, want.masterLevel);
     set (CommandType::SetPan, 0, 0, now.pan, want.pan);
@@ -1034,6 +1073,7 @@ bool LooperView::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey) { clearSlot(); return true; }
     if (c == 'l') { recordLoop (false); return true; }
     if (c == 'o') { recordLoop (true); return true; }
+    if (c == 'm' && mods.isShiftDown()) { toggleMonitorDry(); return true; }
     if (c == 'm') { toggleMonitor(); return true; }
     return unhandled();
 }
@@ -1058,13 +1098,17 @@ void LooperView::tick()
     const auto readout = proc.looperReadout (tool);
     const bool busy = readout.status != LooperEngine::Status::Idle;
     // waiting for the bar: blink
-    const bool blink = readout.status != LooperEngine::Status::Waiting || (juce::Time::getMillisecondCounter() / 250) % 2 == 0;
+    const bool blink = (readout.status != LooperEngine::Status::Waiting && readout.status != LooperEngine::Status::CountIn)
+                       || (juce::Time::getMillisecondCounter() / 250) % 2 == 0;
     recButton.setOn (busy && ! readout.overdub && blink);
     overdubButton.setOn (busy && readout.overdub && blink);
     const auto* audio = l.slots[(size_t) slot].audio;
     barsButton.setText (barsText (l.slots[(size_t) slot].bars));
     inputButton.setText (loopInputName (l.input));
     monitorButton.setOn (l.monitor);
+    dryButton.setText (l.monitorDry ? "DRY" : "FX");
+    dryButton.setOn (l.monitor);
+    countButton.setText (l.countIn == 0 ? juce::String ("NO COUNT") : "COUNT " + juce::String (l.countIn));
     autoButton.setOn (proc.isAutoArmed());
 
     stepReadout.setText ("P" + juce::String (l.pattern + 1) + (l.queuedPattern >= 0 ? ">P" + juce::String (l.queuedPattern + 1) : juce::String())
@@ -1072,8 +1116,9 @@ void LooperView::tick()
     juce::String loopText = audio == nullptr ? "EMPTY" : barsText (audio->bars);
     if (busy)
         loopText = (readout.overdub ? "DUB " : "REC ")
-                   + (readout.status == LooperEngine::Status::Waiting ? juce::String ("WAIT")
-                                                                       : juce::String (juce::roundToInt (readout.progress * 100.0)) + "%")
+                   + (readout.status == LooperEngine::Status::Waiting   ? juce::String ("WAIT")
+                      : readout.status == LooperEngine::Status::CountIn ? "IN " + juce::String (readout.countBeats)
+                                                                         : juce::String (juce::roundToInt (readout.progress * 100.0)) + "%")
                    + " P" + juce::String (readout.slot + 1);
     else if (readout.position >= 0.0 && audio != nullptr && proc.currentPattern (tool) == slot)
         loopText = "BAR " + juce::String (juce::jmin (audio->bars, 1 + (int) (readout.position * audio->bars))) + "/" + juce::String (audio->bars);
@@ -1112,7 +1157,7 @@ void LooperView::paint (juce::Graphics& g)
     g.setColour (proc.isRecording() ? look::red : look::ink);
     g.drawText (fresh ? status : juce::String ("READY"), statusArea, juce::Justification::centredLeft, true);
     g.setColour (look::dim);
-    g.drawText ("L REC LOOP  O OVERDUB  M MONITOR  CLICK SLICE = MUTE  DRAG UP/DOWN = ANOTHER SLICE  RIGHT-CLICK = STRAIGHT  CTRL+Z = UNDO / LAST LAYER",
+    g.drawText ("L REC LOOP  O OVERDUB  M MONITOR  SHIFT+M DRY/FX  CLICK SLICE = MUTE  DRAG UP/DOWN = ANOTHER SLICE  RIGHT-CLICK = STRAIGHT  CTRL+Z = UNDO / LAST LAYER",
                 statusArea, juce::Justification::centredRight, true);
 }
 
@@ -1129,7 +1174,8 @@ void LooperView::resized()
     grid->setCompact (compact);
     panel->setVisible (! compact && getHeight() >= kPanelMinHeight);
     for (juce::Component* c : { (juce::Component*) &recButton, (juce::Component*) &overdubButton, (juce::Component*) &barsButton,
-                                (juce::Component*) &inputButton, (juce::Component*) &monitorButton, (juce::Component*) &clearButton,
+                                (juce::Component*) &inputButton, (juce::Component*) &monitorButton, (juce::Component*) &dryButton,
+                                (juce::Component*) &countButton, (juce::Component*) &clearButton,
                                 (juce::Component*) &resetButton, (juce::Component*) &autoButton, (juce::Component*) &stepReadout,
                                 (juce::Component*) &loopReadout, (juce::Component*) &latencyReadout })
         c->setVisible (! compact);
@@ -1161,10 +1207,14 @@ void LooperView::resized()
     overdubButton.setBounds (buttons.removeFromLeft (84));
     buttons.removeFromLeft (6);
     barsButton.setBounds (buttons.removeFromLeft (72));
+    buttons.removeFromLeft (6);
+    countButton.setBounds (buttons.removeFromLeft (80));
     buttons.removeFromLeft (18);
     inputButton.setBounds (buttons.removeFromLeft (72));
     buttons.removeFromLeft (6);
     monitorButton.setBounds (buttons.removeFromLeft (52));
+    buttons.removeFromLeft (4);
+    dryButton.setBounds (buttons.removeFromLeft (44));
     buttons.removeFromLeft (18);
     clearButton.setBounds (buttons.removeFromLeft (64));
     buttons.removeFromLeft (6);

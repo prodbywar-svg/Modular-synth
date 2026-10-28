@@ -202,6 +202,8 @@ void applyToState (ProjectState& p, const Command& c)
         case CommandType::SetLoopAudio:
         case CommandType::RecordLoop:
         case CommandType::CancelLoopRecord:
+        case CommandType::SetCountIn:
+        case CommandType::SetMonitorDry:
             break;
     }
 }

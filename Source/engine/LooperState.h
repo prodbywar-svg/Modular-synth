@@ -18,6 +18,8 @@ constexpr int kInputTrack = 1;   // the input, after its gain
 constexpr int kNumLoopLengths = 4;
 constexpr int kLoopLengths[kNumLoopLengths] = { 1, 2, 4, 8 }; // bars
 constexpr int kMuteSlice = -1;
+constexpr int kNumCountIns = 4;
+constexpr int kCountIns[kNumCountIns] = { 0, 1, 2, 4 }; // bars of clicks before recording
 
 // A recorded loop. The samples never change once the recording is done, so
 // the audio thread, exports and undo can all share one by pointer; it is owned
@@ -92,7 +94,9 @@ struct LooperState
     float bpm = 132.0f;
     float swing = 0.0f;
     LoopInput input = LoopInput::Stereo;
-    bool monitor = false;          // hear the input through the rack
+    bool monitor = false;          // hear the input
+    bool monitorDry = false;       // ... as it comes in, rather than through the rack
+    int countIn = 1;               // bars of clicks before a recording starts
     float inputGain = 0.7071f;     // unity
     float masterLevel = 0.7071f;   // the looper's output, unity
     float pan = 0.5f;

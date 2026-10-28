@@ -120,6 +120,8 @@ enum class CommandType : std::uint8_t
                       // from the next bar, for loop->bars bars, then the slot plays it;
                       // track = the input latency in samples, filled in by the processor
     CancelLoopRecord, // stops waiting or recording; the slot keeps what it had
+    SetCountIn,       // value = bars of clicks before a recording starts (0 = none)
+    SetMonitorDry,    // value 1 = the monitored input skips the rack, 0 = through it
 };
 
 constexpr int kAllRacks = -2;

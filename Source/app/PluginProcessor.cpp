@@ -154,6 +154,8 @@ void ModularSynthProcessor::replaceStudio (const StudioState& s)
         cmd (CommandType::CancelLoopRecord, tool, 0, 0, 0.0f);
         cmd (CommandType::SetLoopInput, tool, 0, (int) looper.input, 0.0f);
         cmd (CommandType::SetLoopMonitor, tool, 0, 0, looper.monitor ? 1.0f : 0.0f);
+        cmd (CommandType::SetMonitorDry, tool, 0, 0, looper.monitorDry ? 1.0f : 0.0f);
+        cmd (CommandType::SetCountIn, tool, 0, 0, (float) looper.countIn);
         cmd (CommandType::SetInputGain, tool, 0, 0, looper.inputGain);
         cmd (CommandType::SetMasterLevel, tool, 0, 0, looper.masterLevel);
         cmd (CommandType::SetPan, tool, 0, 0, looper.pan);
@@ -567,6 +569,7 @@ ModularSynthProcessor::LooperReadout ModularSynthProcessor::looperReadout (int t
     r.slot = looperSlot[(size_t) l].load();
     r.overdub = looperOverdub[(size_t) l].load();
     r.progress = looperProgress[(size_t) l].load();
+    r.countBeats = looperCount[(size_t) l].load();
     r.position = looperPosition[(size_t) l].load();
     return r;
 }
@@ -768,13 +771,14 @@ void ModularSynthProcessor::handleOnAudioThread (const Command& c)
     }
     else if (c.type == CommandType::RecordStart)
     {
-        // loopers waiting for the bar to record go on waiting in the take
+        // loopers waiting for the bar (or counting in) to record start over
+        // in the take, count-in and all
         std::array<Command, kMaxLoopers> waiting;
         int numWaiting = 0;
         for (int l = 0; l < kMaxLoopers; ++l)
         {
             const auto& looper = engine.looper (l);
-            if (looper.status() != LooperEngine::Status::Waiting)
+            if (looper.status() != LooperEngine::Status::Waiting && looper.status() != LooperEngine::Status::CountIn)
                 continue;
             auto& w = waiting[(size_t) numWaiting++];
             w.type = CommandType::RecordLoop;
@@ -950,6 +954,7 @@ void ModularSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
         looperSlot[(size_t) l] = looper.recordSlot();
         looperOverdub[(size_t) l] = looper.recordOverdub();
         looperProgress[(size_t) l] = looper.recordProgress();
+        looperCount[(size_t) l] = looper.countInBeats();
         looperPosition[(size_t) l] = looper.loopPosition();
         recordingLoops[(size_t) l] = looper.recordBuffer();
         if (looper.finishedCount() != finishedSeen[(size_t) l])

@@ -11,6 +11,7 @@ namespace ms
 // One looper: plays the loop slot of the pattern playing, locked to the bar,
 // through its slice steps; records the input into a slot from the next bar;
 // passes the input through when monitoring. Then pan, the rack and the level.
+// A recording can start with a count-in: clicks on the beats for a bar or more.
 class LooperEngine
 {
 public:
@@ -18,6 +19,7 @@ public:
     {
         Idle,
         Waiting,   // for the next bar
+        CountIn,   // clicking the count-in bars
         Recording, // until the loop's last bar ends (plus the input latency)
     };
 
@@ -63,6 +65,8 @@ public:
     bool recordOverdub() const { return rec.overdub; }
     LoopAudio* recordBuffer() const { return rec.buffer; }
     int recordLatency() const { return rec.latency; }
+    // Beats of count-in still to click (4, 3, 2, 1), 0 when not counting in.
+    int countInBeats() const;
     // How far through its bars the recording is, 0..1.
     double recordProgress() const;
     // Where the loop playing is, 0..1 of its length; -1 when nothing plays.
@@ -87,7 +91,7 @@ private:
     int maxBlock = 512;
     LooperState looper = makeDefaultLooper();
     FxChain fx;
-    std::vector<float> bufL, bufR, taps;
+    std::vector<float> bufL, bufR, dryL, dryR, taps;
     const float* inL = nullptr;
     const float* inR = nullptr;
     bool live = false;
@@ -111,7 +115,13 @@ private:
         std::int64_t count = 0;     // samples since it started
         std::int64_t endCount = -1; // count when its last bar ended
         int latency = 0;            // samples the input arrives late
+        int countLeft = 0;          // count-in bars still to start
     } rec;
+
+    // the count-in click (live only, after the rack: never recorded or exported)
+    std::vector<float> clickBuf;
+    int clickAge = -1;
+    bool clickAccent = false;
 
     int finished = 0, finishedSlot = 0;
     LoopAudio* finishedAudio = nullptr;
