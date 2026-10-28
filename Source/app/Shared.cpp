@@ -43,6 +43,16 @@ void paintPeakMeter (juce::Graphics& g, float x0, float mid, float meterW, float
     g.drawText ("0 dB", juce::Rectangle<float> (x0 + zeroDb + 4.0f, mid + 10.0f, 50.0f, 12.0f), juce::Justification::topLeft);
 }
 
+void copyFxAutomation (const std::function<void (CommandType, int, int, float)>& send, int rack,
+                       const FxAutomation& from, int fromPattern, int toPattern)
+{
+    send (CommandType::ClearFxAuto, rack, toPattern, -1.0f);
+    for (int i = 0; i < kNumFxParams; ++i)
+        for (int st = 0; st < kNumSteps; ++st)
+            if (const float v = from.point (fromPattern, i, st); v >= 0.0f)
+                send (CommandType::SetFxAuto, rack, fxAutoIndex (toPattern, i, st), v);
+}
+
 namespace
 {
 class DatamaticsLookAndFeel : public juce::LookAndFeel_V4
@@ -65,6 +75,86 @@ public:
     }
 
     juce::Font getPopupMenuFont() override { return look::mono (13.0f); }
+
+    // Window title bars: black, the title in the panel lettering on the left,
+    // the window's size as a dim data readout, a rule underneath, and square
+    // marks for minimise / close. The same on the studio and every tool.
+    void drawDocumentWindowTitleBar (juce::DocumentWindow& window, juce::Graphics& g, int w, int h, int titleSpaceX,
+                                     int titleSpaceW, const juce::Image*, bool) override
+    {
+        g.fillAll (look::background);
+        // the studio window has its Options button on the left
+        int x = juce::jmax (12, titleSpaceX);
+        for (auto* child : window.getChildren())
+            if (auto* b = dynamic_cast<juce::TextButton*> (child); b != nullptr && b->isVisible())
+                x = juce::jmax (x, b->getRight() + 14);
+
+        const bool active = window.isActiveWindow();
+        g.setColour (active ? look::ink : look::ink.withAlpha (0.6f));
+        g.fillRect ((float) x, (float) h * 0.5f - 4.0f, 8.0f, 8.0f);
+        g.setFont (look::mono (11.0f, true));
+        const auto title = window.getName().toUpperCase();
+        const int titleW = juce::jmin (titleSpaceX + titleSpaceW - x - 16, juce::GlyphArrangement::getStringWidthInt (look::mono (11.0f, true), title) + 4);
+        g.drawText (title, x + 16, 0, titleW, h, juce::Justification::centredLeft, true);
+
+        g.setFont (look::mono (9.0f));
+        g.setColour (look::dim);
+        const auto size = juce::String (window.getWidth()) + " x " + juce::String (window.getHeight());
+        g.drawText (size, x + 16 + titleW + 16, 0, juce::jmax (0, titleSpaceX + titleSpaceW - (x + 32 + titleW)), h,
+                    juce::Justification::centredLeft, true);
+
+        g.setColour (look::faint);
+        g.fillRect (0, h - 1, w, 1);
+    }
+
+    juce::Button* createDocumentWindowButton (int buttonType) override { return new WindowButton (buttonType); }
+
+    void drawResizableWindowBorder (juce::Graphics& g, int w, int h, const juce::BorderSize<int>&, juce::ResizableWindow&) override
+    {
+        g.setColour (look::faint);
+        g.drawRect (0, 0, w, h, 1);
+    }
+
+    // Minimise / maximise / close as small outlined squares; inverted on hover.
+    class WindowButton : public juce::Button
+    {
+    public:
+        explicit WindowButton (int t) : Button (t == juce::DocumentWindow::closeButton ? "CLOSE" : "MINIMISE"), type (t) {}
+
+        void paintButton (juce::Graphics& g, bool over, bool down) override
+        {
+            const auto box = getLocalBounds().toFloat().withSizeKeepingCentre (14.0f, 14.0f);
+            const bool lit = over || down;
+            if (lit)
+            {
+                g.setColour (look::ink);
+                g.fillRect (box);
+            }
+            else
+            {
+                g.setColour (look::dim);
+                g.drawRect (box, 1.0f);
+            }
+            g.setColour (lit ? look::background : look::ink);
+            const auto c = box.getCentre();
+            if (type == juce::DocumentWindow::closeButton)
+            {
+                g.drawLine (c.x - 3.5f, c.y - 3.5f, c.x + 3.5f, c.y + 3.5f, 1.2f);
+                g.drawLine (c.x - 3.5f, c.y + 3.5f, c.x + 3.5f, c.y - 3.5f, 1.2f);
+            }
+            else if (type == juce::DocumentWindow::maximiseButton)
+            {
+                g.drawRect (box.reduced (3.5f), 1.0f);
+            }
+            else
+            {
+                g.fillRect (c.x - 4.0f, c.y + 2.0f, 8.0f, 1.2f);
+            }
+        }
+
+    private:
+        int type;
+    };
     juce::Font getTextButtonFont (juce::TextButton&, int) override { return look::mono (12.0f, true); }
     juce::Font getLabelFont (juce::Label&) override { return look::mono (12.0f); }
     juce::Font getComboBoxFont (juce::ComboBox&) override { return look::mono (12.0f); }
@@ -108,7 +198,73 @@ void FxRackControls::attach (juce::Component& parent, std::function<FxParams()> 
             formatFxParam (params, i, buf, (int) sizeof (buf));
             return juce::String (buf);
         };
-        s.onChange = [onChange, i] (float v) { onChange (i, v); };
+        s.onChange = [this, onChange, i] (float v) {
+            onChange (i, v);
+            record (i, v);
+        };
+        s.onGesture = [this, i] (bool down) {
+            held[(size_t) i] = down;
+            lastStep[(size_t) i] = -1;
+        };
+        s.onRightClick = [this, i] {
+            if (automation.moves == nullptr)
+                return;
+            const auto* moves = automation.moves();
+            const int pattern = automation.pattern();
+            if (moves == nullptr || ! moves->has (pattern, i))
+                return;
+            juce::PopupMenu m;
+            m.addItem (1, "CLEAR " + juce::String (fxParamName (i)) + " AUTOMATION (THIS PATTERN)");
+            m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(), [this, i, pattern] (int r) {
+                if (r == 1)
+                    automation.send (CommandType::ClearFxAuto, pattern, (float) i);
+            });
+        };
+    }
+}
+
+void FxRackControls::setAutomation (Automation a)
+{
+    automation = std::move (a);
+}
+
+void FxRackControls::record (int index, float value)
+{
+    if (automation.recording == nullptr || ! automation.recording() || fxParamIsToggle (index))
+        return;
+    const int step = automation.step();
+    automation.send (CommandType::SetFxAuto, fxAutoIndex (automation.pattern(), index, step), value);
+    lastStep[(size_t) index] = step;
+}
+
+void FxRackControls::tickAutomation (const FxParams& set)
+{
+    if (automation.moves == nullptr)
+        return;
+    // a control held still keeps writing its value into each new step
+    if (automation.recording())
+    {
+        const int step = automation.step();
+        for (int i = 0; i < kNumFxParams; ++i)
+            if (held[(size_t) i] && lastStep[(size_t) i] != step)
+                record (i, set[(size_t) i]);
+    }
+
+    const auto* moves = automation.moves();
+    const int pattern = automation.pattern();
+    const double position = automation.position();
+    for (int i = 0; i < kNumFxParams; ++i)
+    {
+        auto& s = sliders[(size_t) i];
+        if (moves == nullptr || ! moves->has (pattern, i))
+        {
+            s.clearAutomation();
+            continue;
+        }
+        std::array<float, 16> points {};
+        for (int st = 0; st < kNumSteps; ++st)
+            points[(size_t) st] = moves->point (pattern, i, st);
+        s.setAutomation (points, position >= 0.0 ? moves->valueAt (pattern, i, position) : -1.0f);
     }
 }
 

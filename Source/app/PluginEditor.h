@@ -38,6 +38,7 @@ private:
 
     void togglePlay();
     void toggleRecord();
+    void toggleAutomation();
     void stop();
     void chooseExport();
     void startExport (ms::Take take, const juce::String& baseName);
@@ -51,7 +52,7 @@ private:
 
     ModularSynthProcessor& proc;
 
-    DataButton playButton { "PLAY" }, stopButton { "STOP" }, recButton { "REC" };
+    DataButton playButton { "PLAY" }, stopButton { "STOP" }, recButton { "REC" }, autoButton { "AUTO" };
     DataButton exportButton { "EXPORT" }, saveButton { "SAVE" }, openButton { "OPEN" };
     DataReadout bpmReadout, swingReadout, stepReadout, posReadout, rateReadout, takeReadout;
 

@@ -22,7 +22,8 @@ public:
     ToolWindow (const juce::String& name, std::unique_ptr<juce::Component> content)
         : DocumentWindow (name, look::background, juce::DocumentWindow::minimiseButton | juce::DocumentWindow::closeButton)
     {
-        setUsingNativeTitleBar (true);
+        setUsingNativeTitleBar (false); // drawn in the datamatics look, see sharedLookAndFeel
+        setTitleBarHeight (26);
         setContentOwned (content.release(), true);
         setResizable (true, false);
     }
@@ -226,6 +227,23 @@ public:
 
         fx.attach (*this, [this] { return editor.processor().getStudioState().masterFx; },
                    [this] (int i, float v) { editor.send (CommandType::SetFxParam, kStudio, 0, i, v); });
+
+        // the studio has no patterns: its moves loop every bar
+        auto& proc = editor.processor();
+        FxRackControls::Automation a;
+        a.moves = [&proc] { return &proc.getStudioState().masterFxAuto; };
+        a.pattern = [] { return 0; };
+        a.recording = [&proc] { return proc.isAutoArmed() && proc.isPlaying(); };
+        a.step = [&proc] { return proc.currentStep(); };
+        a.position = [&proc] { return proc.isPlaying() ? proc.stepPosition() : -1.0; };
+        a.send = [this] (CommandType type, int index, float value) { editor.send (type, kStudio, 0, index, value); };
+        fx.setAutomation (std::move (a));
+
+        addAndMakeVisible (clearAutoButton);
+        clearAutoButton.onClick = [this] {
+            editor.send (CommandType::ClearFxAuto, kStudio, 0, -1, -1.0f);
+            editor.setStatus ("CLEARED THE STUDIO MASTER'S EFFECT AUTOMATION");
+        };
     }
 
     void refresh()
@@ -233,6 +251,8 @@ public:
         const auto& s = editor.processor().getStudioState();
         level.setValue (s.masterLevel);
         fx.setValues (s.masterFx);
+        fx.tickAutomation (s.masterFx);
+        clearAutoButton.setVisible (s.masterFxAuto.any (0));
         repaint (meterArea());
     }
 
@@ -263,6 +283,7 @@ public:
         const int rowH = 20, y0 = 48;
         const int colW = columnX (1) - columnX (0) - 24;
         level.setBounds (columnX (0), y0, colW, rowH);
+        clearAutoButton.setBounds (getWidth() - 100, 4, 100, 20);
         fx.layout ([this] (int c) { return columnX (c + 1); }, y0, rowH, colW);
     }
 
@@ -274,6 +295,7 @@ private:
     ModularSynthEditor& editor;
     DataSlider level;
     FxRackControls fx;
+    DataButton clearAutoButton { "CLEAR AUTO" };
     float hold = 0.0f;
 };
 
@@ -343,6 +365,9 @@ ModularSynthEditor::ModularSynthEditor (ModularSynthProcessor& p) : AudioProcess
     playButton.onClick = [this] { togglePlay(); };
     stopButton.onClick = [this] { stop(); };
     recButton.onClick = [this] { toggleRecord(); };
+    addAndMakeVisible (autoButton);
+    autoButton.setAccent (look::red);
+    autoButton.onClick = [this] { toggleAutomation(); };
     exportButton.onClick = [this] { chooseExport(); };
     saveButton.onClick = [this] { saveProject(); };
     openButton.onClick = [this] { openProject(); };
@@ -444,7 +469,8 @@ void ModularSynthEditor::createToolWindow (int tool, juce::Rectangle<int> bounds
     }
 
     auto window = std::make_unique<ToolWindow> ("MODULAR-SYNTH // " + juce::String (look::pad (tool + 1, 2)) + " " + toolTitle (tool), std::move (content));
-    window->setResizeLimits (1100, 720, 2600, 1700);
+    // small enough to fold down to the pattern buttons and the signal boxes
+    window->setResizeLimits (360, 300, 2600, 1700);
     window->setBounds (bounds);
     window->onTick = std::move (tick);
     window->onLayoutChange = [this] { storeWindowLayout(); };
@@ -576,6 +602,13 @@ void ModularSynthEditor::toggleRecord()
         send (CommandType::RecordStart, kStudio, 0, 0, 0.0f);
         setStatus ("RECORDING EVERY TOOL / PLAY PADS, MUTE, MOVE ANYTHING / R OR STOP TO END");
     }
+}
+
+void ModularSynthEditor::toggleAutomation()
+{
+    proc.setAutoArmed (! proc.isAutoArmed());
+    setStatus (proc.isAutoArmed() ? "AUTO ARMED // WHILE PLAYING, EFFECT MOVES ARE RECORDED INTO THE STEPS (RIGHT-CLICK A CONTROL TO CLEAR IT)"
+                                  : "AUTO OFF // RECORDED MOVES KEEP PLAYING");
 }
 
 void ModularSynthEditor::chooseExport()
@@ -731,8 +764,9 @@ void ModularSynthEditor::timerCallback()
     const auto& studio = proc.getStudioState();
     if (toolsMask() != shownTools)
     {
-        // room for every strip: grow the window if it has to
-        const int needed = stripsBottom() + kMasterHeight + kStatusHeight + 8;
+        // room for every strip: grow the window if it has to. Below the full
+        // height the master rack folds away.
+        const int needed = stripsBottom() + kStatusHeight + 8;
         setResizeLimits (1000, needed, 2600, 1700);
         if (getHeight() < needed)
             setSize (getWidth(), needed);
@@ -759,6 +793,7 @@ void ModularSynthEditor::timerCallback()
 
     playButton.setOn (proc.isPlaying());
     recButton.setOn (recording);
+    autoButton.setOn (proc.isAutoArmed());
 
     bpmReadout.setText (juce::String (studio.bpm, 1));
     swingReadout.setText (look::pad (juce::roundToInt (studio.swing * 100.0f), 2) + " %");
@@ -854,7 +889,7 @@ void ModularSynthEditor::resized()
 
     // buttons along the bottom of the header
     auto buttons = header.removeFromBottom (34).withTrimmedBottom (10);
-    for (auto* b : { &playButton, &stopButton, &recButton })
+    for (auto* b : { &playButton, &stopButton, &recButton, &autoButton })
     {
         b->setBounds (buttons.removeFromLeft (72));
         buttons.removeFromLeft (6);
@@ -877,7 +912,9 @@ void ModularSynthEditor::resized()
     }
 
     area.removeFromBottom (kStatusHeight);
-    master->setBounds (area.removeFromBottom (kMasterHeight).reduced (kMargin, 0));
+    master->setVisible (area.getHeight() - (stripsBottom() - kHeaderHeight) >= kMasterHeight);
+    if (master->isVisible())
+        master->setBounds (area.removeFromBottom (kMasterHeight).reduced (kMargin, 0));
 
     area.removeFromTop (kToolsLabelHeight);
     const auto& studio = proc.getStudioState();

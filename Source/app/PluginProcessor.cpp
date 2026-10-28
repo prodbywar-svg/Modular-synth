@@ -130,6 +130,34 @@ void ModularSynthProcessor::replaceStudio (const StudioState& s)
             cmd (CommandType::SetFxParam, tool, -1, i, bass.masterFx[(size_t) i]);
     }
 
+    // effect automation: clear every rack, then send each recorded point
+    auto automation = [&cmd] (int tool, int rack, const FxAutomation& a) {
+        for (int pat = 0; pat < kNumPatterns; ++pat)
+            for (int i = 0; i < kNumFxParams; ++i)
+                for (int st = 0; st < kNumSteps; ++st)
+                    if (const float v = a.point (pat, i, st); v >= 0.0f)
+                        cmd (CommandType::SetFxAuto, tool, rack, fxAutoIndex (pat, i, st), v);
+    };
+    cmd (CommandType::ClearFxAuto, kStudio, 0, -1, -1.0f);
+    automation (kStudio, 0, s.masterFxAuto);
+    if (s.tools[(size_t) kDrumTool].active)
+    {
+        cmd (CommandType::ClearFxAuto, kDrumTool, kAllRacks, -1, -1.0f);
+        automation (kDrumTool, -1, p.masterFxAuto);
+        for (int t = 0; t < kNumTracks; ++t)
+            automation (kDrumTool, t, p.tracks[(size_t) t].fxAuto);
+    }
+    for (int b = 0; b < kMaxBassSynths; ++b)
+    {
+        const int tool = kFirstBassTool + b;
+        if (! s.tools[(size_t) tool].active)
+            continue;
+        cmd (CommandType::ClearFxAuto, tool, kAllRacks, -1, -1.0f);
+        automation (tool, -1, s.bass[(size_t) b].masterFxAuto);
+        for (int r = 0; r < kBassRows; ++r)
+            automation (tool, r, s.bass[(size_t) b].rows[(size_t) r].fxAuto);
+    }
+
     cmd (CommandType::SetBpm, kStudio, 0, 0, s.bpm);
     cmd (CommandType::SetSwing, kStudio, 0, 0, s.swing);
     cmd (CommandType::SetMasterLevel, kStudio, 0, 0, s.masterLevel);
@@ -467,6 +495,7 @@ void ModularSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
     playingFlag = engine.isPlaying();
     recordingFlag = recording;
     stepIndex = engine.currentStep();
+    stepPositionValue = engine.position();
     recordedSampleCount = recordPosition;
 }
 

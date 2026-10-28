@@ -10,6 +10,10 @@ constexpr int kHeaderHeight = 72;
 constexpr int kPanelHeight = 250;
 constexpr int kStatusHeight = 24;
 constexpr int kMargin = 16;
+// below these the window folds down (see resized)
+constexpr int kCompactWidth = 1000;
+constexpr int kCompactHeight = 420;
+constexpr int kPanelMinHeight = 640;
 
 // Keys that play pads 1-8: number row and home row.
 constexpr char kPadKeys[kNumTracks][2] = { { '1', 'a' }, { '2', 's' }, { '3', 'd' }, { '4', 'f' },
@@ -24,6 +28,9 @@ class TrackGrid : public juce::Component
 {
 public:
     explicit TrackGrid (DrumMachineView& e) : editor (e) {}
+
+    // Small windows: just each track's number box and signal box.
+    void setCompact (bool c) { compact = c; }
 
     void tick()
     {
@@ -46,6 +53,11 @@ public:
 
     void paint (juce::Graphics& g) override
     {
+        if (compact)
+        {
+            paintCompact (g);
+            return;
+        }
         auto& proc = editor.processor();
         const auto& state = proc.getUiState();
         const auto geo = geometry();
@@ -92,6 +104,16 @@ public:
 
     void mouseDown (const juce::MouseEvent& e) override
     {
+        dragMode = DragMode::None;
+        if (compact)
+        {
+            // the number boxes still play the drums
+            const int t = juce::jlimit (0, kNumTracks - 1, (int) (e.position.y / ((float) getHeight() / (float) kNumTracks)));
+            editor.selectTrack (t);
+            if (e.position.x < 36.0f)
+                editor.send (CommandType::Trigger, t, 0, 1.0f);
+            return;
+        }
         const auto geo = geometry();
         const auto p = e.position;
         const int row = geo.rowAt (p.y);
@@ -181,6 +203,8 @@ public:
 
     void mouseDoubleClick (const juce::MouseEvent& e) override
     {
+        if (compact)
+            return;
         const auto geo = geometry();
         const int row = geo.rowAt (e.position.y);
         if (row >= 0 && row < kNumTracks && e.position.x >= geo.nameX && e.position.x < geo.stepsX - 4.0f)
@@ -303,6 +327,8 @@ private:
         g.setColour (look::ink.withAlpha (alpha * (selected ? 1.0f : 0.8f)));
         g.drawText (proc.trackName (t), juce::Rectangle<float> (geo.nameX + 10.0f, y0 + 4.0f, geo.stepsX - geo.nameX - 14.0f, h * 0.5f - 2.0f),
                     juce::Justification::bottomLeft, true);
+        if (tr.fxAuto.any (pattern))
+            paintTag (g, "AUTO", geo.stepsX - 46.0f, y0 + 6.0f, look::blue);
         g.setFont (look::mono (9.5f));
         g.setColour (look::dim);
         char first[32];
@@ -352,6 +378,21 @@ private:
             if (voiceParamIsPitch (tr.voice, tr.character, i) && voiceParamSteps (tr.voice, tr.character, i) == 0)
                 return voiceParamValue (tr.voice, tr.character, i, tr.voiceParams[(size_t) i]);
         return 0.0f;
+    }
+
+    void paintCompact (juce::Graphics& g)
+    {
+        const auto& state = editor.processor().getUiState();
+        const float rowH = (float) getHeight() / (float) kNumTracks, w = (float) getWidth();
+        for (int t = 0; t < kNumTracks; ++t)
+        {
+            const float y0 = rowH * (float) t;
+            const auto& tr = state.tracks[(size_t) t];
+            g.setColour (look::faint);
+            g.fillRect (0.0f, y0, w, 1.0f);
+            paintIndex (g, { 2.0f, y0 + 3.0f, 30.0f, rowH - 6.0f }, look::pad (t + 1, 2), flash[(size_t) t], editor.selectedTrack() == t);
+            paintSignalBox (g, { 38.0f, y0 + 2.0f, w - 38.0f, rowH - 4.0f }, t, tr, tr.mute ? 0.35f : 1.0f);
+        }
     }
 
     // the drum's pitch and its readout, for the signal panel
@@ -427,6 +468,7 @@ private:
     SignalBox signal; // reused for every track
     float masterHold = 0.0f;
     DragMode dragMode = DragMode::None;
+    bool compact = false;
     int dragTrack = 0, dragStep = 0;
     float dragStartVelocity = 0.0f;
 };
@@ -492,6 +534,29 @@ public:
 
         fx.attach (*this, [this] { return shownFx(); },
                    [this] (int i, float v) { editor.send (CommandType::SetFxParam, editor.selectedTrack(), i, v); });
+
+        auto& proc = editor.processor();
+        FxRackControls::Automation a;
+        a.moves = [this] {
+            const auto& state = editor.processor().getUiState();
+            const int t = editor.selectedTrack();
+            return t < 0 ? &state.masterFxAuto : &state.tracks[(size_t) t].fxAuto;
+        };
+        a.pattern = [&proc] { return proc.isPlaying() ? proc.currentPattern (kDrumTool) : viewedPattern (proc.getUiState()); };
+        a.recording = [&proc] { return proc.isAutoArmed() && proc.isPlaying(); };
+        a.step = [&proc] { return proc.currentStep(); };
+        a.position = [&proc] { return proc.isPlaying() ? proc.stepPosition() : -1.0; };
+        a.send = [this] (CommandType type, int index, float value) { editor.send (type, editor.selectedTrack(), index, value); };
+        fx.setAutomation (std::move (a));
+
+        addAndMakeVisible (clearAutoButton);
+        clearAutoButton.onClick = [this] {
+            const auto& state = editor.processor().getUiState();
+            editor.send (CommandType::ClearFxAuto, editor.selectedTrack(), viewedPattern (state), -1.0f);
+            editor.setStatus ("CLEARED THE EFFECT AUTOMATION OF " + (editor.selectedTrack() < 0 ? juce::String ("THE DRUM BUS")
+                                                                        : editor.processor().trackName (editor.selectedTrack()))
+                              + " ON P" + juce::String (viewedPattern (state) + 1));
+        };
     }
 
     void refresh()
@@ -545,6 +610,8 @@ public:
             repaint();
         }
 
+        fx.tickAutomation (shownFx());
+        clearAutoButton.setVisible (shownFxAuto().any (viewedPattern (state)));
         if (master)
         {
             level.setValue (state.masterLevel);
@@ -609,6 +676,8 @@ public:
         pasteButton.setBounds (top.removeFromLeft (64));
         top.removeFromLeft (4);
         randomButton.setBounds (top.removeFromLeft (76));
+        top.removeFromLeft (20);
+        clearAutoButton.setBounds (top.removeFromLeft (100));
 
         for (int i = 0; i < kNumVoiceParams; ++i)
             voice[(size_t) i].setBounds (columnX (0), y0 + i * rowH, colW, rowH);
@@ -622,6 +691,13 @@ private:
     static constexpr int kColumns = 5;
     int columnX (int c) const { return c * (getWidth() + 24) / kColumns; }
 
+    const FxAutomation& shownFxAuto() const
+    {
+        const auto& state = editor.processor().getUiState();
+        const int t = editor.selectedTrack();
+        return t < 0 ? state.masterFxAuto : state.tracks[(size_t) t].fxAuto;
+    }
+
     FxParams shownFx() const
     {
         const auto& state = editor.processor().getUiState();
@@ -631,6 +707,7 @@ private:
 
     DrumMachineView& editor;
     DataButton typeButton { "TYPE" };
+    DataButton clearAutoButton { "CLEAR AUTO" };
     DataButton copyButton { "COPY DRUM" }, copyPatternButton { "COPY PATTERN" }, pasteButton { "PASTE" }, randomButton { "RANDOM" };
     std::array<DataButton, kNumCharacters> characterButtons { DataButton { "LIVE" }, DataButton { "DIGITAL" }, DataButton { "HR-16" } };
     std::array<DataSlider, kNumVoiceParams> voice;
@@ -765,6 +842,10 @@ void DrumMachineView::copyPatternTo (int pattern)
         for (int s = 0; s < kNumSteps; ++s)
             send (CommandType::SetStep, t, pattern * kNumSteps + s, source[(size_t) s]);
     }
+    auto sendFn = [this] (CommandType type, int rack, int index, float value) { send (type, rack, index, value); };
+    for (int t = 0; t < kNumTracks; ++t)
+        copyFxAutomation (sendFn, t, state.tracks[(size_t) t].fxAuto, from, pattern);
+    copyFxAutomation (sendFn, -1, state.masterFxAuto, from, pattern);
     setStatus ("COPIED P" + juce::String (from + 1) + " TO P" + juce::String (pattern + 1));
 }
 
@@ -775,8 +856,10 @@ DrumMachineView::UndoSnapshot DrumMachineView::takeSnapshot (int pattern, bool w
     snap.pattern = pattern;
     snap.hasFx = withFx;
     snap.masterFx = state.masterFx;
+    snap.masterFxAuto = state.masterFxAuto;
     for (int t = 0; t < kNumTracks; ++t)
     {
+        snap.fxAuto[(size_t) t] = state.tracks[(size_t) t].fxAuto;
         snap.steps[(size_t) t] = state.tracks[(size_t) t].patterns[(size_t) pattern];
         snap.fx[(size_t) t] = state.tracks[(size_t) t].fx;
     }
@@ -792,10 +875,10 @@ void DrumMachineView::clearPattern()
     const auto defaults = defaultFxParams();
     const auto before = takeSnapshot (pattern, true);
 
-    bool changed = before.masterFx != defaults;
+    bool changed = before.masterFx != defaults || before.masterFxAuto.any (pattern);
     for (int t = 0; t < kNumTracks; ++t)
     {
-        changed = changed || before.fx[(size_t) t] != defaults;
+        changed = changed || before.fx[(size_t) t] != defaults || before.fxAuto[(size_t) t].any (pattern);
         for (float v : before.steps[(size_t) t])
             changed = changed || v > 0.0f;
     }
@@ -814,6 +897,8 @@ void DrumMachineView::clearPattern()
     for (int i = 0; i < kNumFxParams; ++i)
         if (! juce::exactlyEqual (before.masterFx[(size_t) i], defaults[(size_t) i]))
             send (CommandType::SetFxParam, -1, i, defaults[(size_t) i]);
+
+    send (CommandType::ClearFxAuto, kAllRacks, pattern, -1.0f);
 
     lastUndo = before;
     setStatus ("CLEARED P" + juce::String (pattern + 1) + " + RESET ALL EFFECTS / CTRL+Z TO BRING IT BACK");
@@ -886,8 +971,14 @@ void DrumMachineView::undo()
                 send (CommandType::SetFxParam, t, i, snap.fx[(size_t) t][(size_t) i]);
     }
     if (snap.hasFx)
+    {
         for (int i = 0; i < kNumFxParams; ++i)
             send (CommandType::SetFxParam, -1, i, snap.masterFx[(size_t) i]);
+        auto sendFn = [this] (CommandType type, int rack, int index, float value) { send (type, rack, index, value); };
+        for (int t = 0; t < kNumTracks; ++t)
+            copyFxAutomation (sendFn, t, snap.fxAuto[(size_t) t], snap.pattern, snap.pattern);
+        copyFxAutomation (sendFn, -1, snap.masterFxAuto, snap.pattern, snap.pattern);
+    }
     if (snap.hasSettings)
     {
         applySettings (snap.settings);
@@ -1078,6 +1169,13 @@ DrumMachineView::DrumMachineView (ModularSynthProcessor& p) : proc (p)
         addAndMakeVisible (*b);
     clearButton.onClick = [this] { clearPattern(); };
     resetButton.onClick = [this] { resetToDefaults(); };
+    addAndMakeVisible (autoButton);
+    autoButton.setAccent (look::red);
+    autoButton.onClick = [this] {
+        proc.setAutoArmed (! proc.isAutoArmed());
+        setStatus (proc.isAutoArmed() ? "AUTO ARMED // WHILE PLAYING, EFFECT MOVES ARE RECORDED INTO THE STEPS (RIGHT-CLICK A CONTROL TO CLEAR IT)"
+                                      : "AUTO OFF // RECORDED MOVES KEEP PLAYING");
+    };
     for (int i = 0; i < kNumPatterns; ++i)
     {
         auto& b = patternButtons[(size_t) i];
@@ -1117,6 +1215,7 @@ void DrumMachineView::tick()
     stepReadout.setText ("P" + juce::String (state.pattern + 1) + (state.queuedPattern >= 0 ? ">P" + juce::String (state.queuedPattern + 1) : juce::String())
                          + "  " + look::pad (proc.currentStep() + 1, 2) + "/" + juce::String (kNumSteps));
     busReadout.setText (formatDb (levelToGain (state.masterLevel)));
+    autoButton.setOn (proc.isAutoArmed());
 
     grid->tick();
     panel->refresh();
@@ -1126,6 +1225,8 @@ void DrumMachineView::tick()
 void DrumMachineView::paint (juce::Graphics& g)
 {
     g.fillAll (look::background);
+    if (isCompact())
+        return;
 
     g.setColour (look::ink);
     g.setFont (look::mono (16.0f, true));
@@ -1149,8 +1250,34 @@ void DrumMachineView::paint (juce::Graphics& g)
                 statusArea, juce::Justification::centredRight, true);
 }
 
+bool DrumMachineView::isCompact() const
+{
+    return getWidth() < kCompactWidth || getHeight() < kCompactHeight;
+}
+
 void DrumMachineView::resized()
 {
+    // Smaller windows fold away the controls panel, then everything but the
+    // pattern buttons and the signal boxes.
+    const bool compact = isCompact();
+    grid->setCompact (compact);
+    panel->setVisible (! compact && getHeight() >= kPanelMinHeight);
+    for (juce::Component* c : { (juce::Component*) &clearButton, (juce::Component*) &resetButton, (juce::Component*) &autoButton,
+                                (juce::Component*) &stepReadout, (juce::Component*) &busReadout })
+        c->setVisible (! compact);
+    if (compact)
+    {
+        auto area = getLocalBounds();
+        auto buttons = area.removeFromTop (34).reduced (8, 6);
+        for (auto& b : patternButtons)
+        {
+            b.setBounds (buttons.removeFromLeft (44));
+            buttons.removeFromLeft (4);
+        }
+        grid->setBounds (area.reduced (6, 2));
+        return;
+    }
+
     auto area = getLocalBounds();
     auto header = area.removeFromTop (kHeaderHeight).reduced (kMargin, 0);
 
@@ -1164,6 +1291,8 @@ void DrumMachineView::resized()
     clearButton.setBounds (buttons.removeFromLeft (72));
     buttons.removeFromLeft (6);
     resetButton.setBounds (buttons.removeFromLeft (72));
+    buttons.removeFromLeft (18);
+    autoButton.setBounds (buttons.removeFromLeft (72));
 
     auto readouts = header.withTrimmedTop (8).withTrimmedLeft (juce::jmax (380, header.getWidth() - 260));
     stepReadout.setBounds (readouts.removeFromLeft (120).withHeight (36));
@@ -1171,6 +1300,7 @@ void DrumMachineView::resized()
     busReadout.setBounds (readouts.removeFromLeft (110).withHeight (36));
 
     area.removeFromBottom (kStatusHeight);
-    panel->setBounds (area.removeFromBottom (kPanelHeight).reduced (kMargin, 0));
+    if (panel->isVisible())
+        panel->setBounds (area.removeFromBottom (kPanelHeight).reduced (kMargin, 0));
     grid->setBounds (area.reduced (kMargin, 6));
 }

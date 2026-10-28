@@ -49,6 +49,19 @@ void DataSlider::changeByUser (float v, const juce::ModifierKeys& mods)
     change (v);
 }
 
+void DataSlider::setAutomation (const std::array<float, 16>& points, float live)
+{
+    bool any = false;
+    for (float p : points)
+        any = any || p >= 0.0f;
+    if (any == hasLane && points == lane && juce::exactlyEqual (live, liveValue))
+        return;
+    lane = points;
+    hasLane = any;
+    liveValue = live;
+    repaint();
+}
+
 void DataSlider::paint (juce::Graphics& g)
 {
     const auto b = getLocalBounds().toFloat();
@@ -101,8 +114,21 @@ void DataSlider::paint (juce::Graphics& g)
     for (int i = 0; i <= 4; ++i)
         g.fillRect (line.getX() + line.getWidth() * (float) i / 4.0f, y - 3.0f, 1.0f, 3.0f);
 
-    g.setColour (look::ink);
-    const float x = line.getX() + line.getWidth() * value;
+    // automation: the recorded steps as blue dots under the line, and the
+    // value playing now, which the line and readout show instead
+    const bool live = hasLane && liveValue >= 0.0f && ! dragging;
+    if (hasLane)
+    {
+        g.setColour (look::blue);
+        const float cell = line.getWidth() / 16.0f;
+        for (int s = 0; s < 16; ++s)
+            if (lane[(size_t) s] >= 0.0f)
+                g.fillRect (line.getX() + cell * (float) s, y + 5.0f, juce::jmax (1.5f, cell - 1.0f), 2.0f);
+    }
+    const float shown = live ? liveValue : value;
+
+    g.setColour (live ? look::blue : look::ink);
+    const float x = line.getX() + line.getWidth() * shown;
     if (bipolar)
     {
         const float mid = line.getCentreX();
@@ -114,26 +140,46 @@ void DataSlider::paint (juce::Graphics& g)
     }
     g.fillRect (x - 0.5f, y - 6.0f, 1.0f, 12.0f);
 
-    g.drawText (format ? format (value) : juce::String (value, 3),
+    g.setColour (live ? look::blue.brighter (0.4f) : look::ink);
+    g.drawText (format ? format (shown) : juce::String (shown, 3),
                 b.withTrimmedLeft (b.getWidth() - valueW).toNearestInt(), juce::Justification::centredRight);
 }
 
-void DataSlider::mouseDown (const juce::MouseEvent&)
+void DataSlider::mouseDown (const juce::MouseEvent& e)
 {
+    if (e.mods.isPopupMenu())
+    {
+        if (onRightClick)
+            onRightClick();
+        return;
+    }
     dragStartValue = value;
+    dragging = true;
+    if (onGesture)
+        onGesture (true);
     if (isToggle())
         change (value > 0.5f ? 0.0f : 1.0f);
 }
 
 void DataSlider::mouseDrag (const juce::MouseEvent& e)
 {
-    if (isToggle())
+    if (isToggle() || ! dragging)
         return;
     const float width = juce::jmax (40.0f, (float) getWidth() - 156.0f);
     const float scale = e.mods.isShiftDown() ? 0.1f : 1.0f;
     // stepped controls need a longer throw per position to stay usable
     const float throwScale = steps > 1 ? juce::jmin (1.0f, (float) steps / 24.0f) : 1.0f;
     changeByUser (dragStartValue + (float) e.getDistanceFromDragStartX() / width * scale * throwScale, e.mods);
+}
+
+void DataSlider::mouseUp (const juce::MouseEvent& e)
+{
+    if (e.mods.isPopupMenu() || ! dragging)
+        return;
+    dragging = false;
+    repaint();
+    if (onGesture)
+        onGesture (false);
 }
 
 void DataSlider::mouseDoubleClick (const juce::MouseEvent&)

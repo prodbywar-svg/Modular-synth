@@ -2,6 +2,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <array>
 #include <functional>
 
 // The datamatics look: black field, white marks, tiny monospace numbers,
@@ -44,17 +45,34 @@ public:
     bool isToggle() const { return toggleOn.isNotEmpty(); }
 
     std::function<void (float)> onChange;
+    // true when a drag starts, false when it ends (automation records while held)
+    std::function<void (bool)> onGesture;
+    std::function<void()> onRightClick;
     std::function<juce::String (float)> format;
+
+    // Effect automation, drawn in blue: the recorded steps under the line,
+    // and the value it is playing now (-1 = none) in place of the set one.
+    void setAutomation (const std::array<float, 16>& points, float live);
+    void clearAutomation()
+    {
+        std::array<float, 16> none;
+        none.fill (-1.0f);
+        setAutomation (none, -1.0f);
+    }
     // Applied to dragged / scrolled values unless Alt is held (snap to notes).
     std::function<float (float)> snap;
 
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
     void mouseDoubleClick (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
 private:
+    std::array<float, 16> lane {};
+    bool hasLane = false, dragging = false;
+    float liveValue = -1.0f;
     void change (float v);
     void changeByUser (float v, const juce::ModifierKeys&);
 

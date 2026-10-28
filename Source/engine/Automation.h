@@ -27,6 +27,8 @@ public:
     bool has (int pattern, int param) const;
     bool any (int pattern) const;
     bool anyAtAll() const;
+    bool operator== (const FxAutomation& o) const { return points == o.points; }
+    bool operator!= (const FxAutomation& o) const { return points != o.points; }
     // The recorded value at a step, or -1.
     float point (int pattern, int param, int step) const;
 

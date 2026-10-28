@@ -873,6 +873,34 @@ void testAutomationPlays()
     std::printf ("  second half / first half highs: %.3f plain, %.4f swept\n", plainRatio, sweptRatio);
     CHECK (sweptRatio < plainRatio * 0.2);
     CHECK (b.finite());
+
+    // every rack automated at once, several bars: nothing blows up
+    auto busy = makeDefaultStudio();
+    auto point = [&busy] (int tool, int rack, int param, int st, float v) {
+        Command c;
+        c.type = CommandType::SetFxAuto;
+        c.tool = tool;
+        c.track = rack;
+        c.index = fxAutoIndex (0, param, st);
+        c.value = v;
+        applyToStudio (busy, c);
+    };
+    for (int st = 0; st < kNumSteps; ++st)
+    {
+        point (kDrumTool, 0, fxCutoff, st, 0.35f + 0.6f * std::abs (std::sin ((float) st * 0.4f)));
+        point (kFirstBassTool, 0, fxCutoff, st, 0.35f + 0.6f * std::abs (std::sin ((float) st * 0.4f)));
+        if (st % 4 == 0)
+        {
+            point (kDrumTool, 0, fxDelayMix, st, st == 8 ? 0.6f : 0.1f);
+            point (kFirstBassTool, 0, fxDelayMix, st, st == 8 ? 0.6f : 0.1f);
+        }
+    }
+    point (kStudio, 0, fxReverbMix, 0, 0.1f);
+    point (kStudio, 0, fxReverbMix, 12, 0.5f);
+    const auto busyTake = makePatternTake (busy, 4, kSr);
+    const auto out = renderStem (busyTake, {}, busyTake.length);
+    std::printf ("  everything automated: peak %.3f\n", (double) out.peak());
+    CHECK (out.finite());
 }
 
 void testAutomationSaved()
