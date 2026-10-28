@@ -119,6 +119,24 @@ void FxChain::setParams (const FxParams& p, double bpm)
                    fxTimeSeconds (p, fxPsyTime, bpm), p[fxPsyMix]);
 }
 
+void FxChain::processAutomated (const FxParams& base, const FxAutomation& automation, int pattern, double position,
+                                double stepsPerSample, double bpm, float* left, float* right, int numSamples)
+{
+    if (stepsPerSample <= 0.0 || ! automation.any (pattern))
+    {
+        setParams (base, bpm);
+        process (left, right, numSamples);
+        return;
+    }
+    constexpr int kChunk = 32;
+    for (int offset = 0; offset < numSamples; offset += kChunk)
+    {
+        const int n = std::min (kChunk, numSamples - offset);
+        setParams (automation.apply (base, pattern, position + stepsPerSample * (double) offset), bpm);
+        process (left + offset, right + offset, n);
+    }
+}
+
 void FxChain::process (float* left, float* right, int numSamples)
 {
     const bool crushOn = bits < 15.5f || holdFactor > 1.01f;

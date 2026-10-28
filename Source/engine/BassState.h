@@ -55,6 +55,7 @@ struct BassRow
     bool mute = false;
     bool solo = false;
     FxParams fx = defaultFxParams();
+    FxAutomation fxAuto;
     std::array<Pattern, kNumPatterns> velocity {}; // 0 = step off
     std::array<NotePattern, kNumPatterns> notes {};
     std::array<LengthPattern, kNumPatterns> lengths {};
@@ -68,6 +69,7 @@ struct BassState
     std::array<BassRow, kBassRows> rows {};
     float masterLevel = 0.5f; // the bass bus, -6 dB like the drum bus
     FxParams masterFx = defaultFxParams();
+    FxAutomation masterFxAuto;
     int pattern = 0;
     int queuedPattern = -1;
     int key = 0;   // 0 = C .. 11 = B

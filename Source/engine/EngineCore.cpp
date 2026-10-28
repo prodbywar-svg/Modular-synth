@@ -134,6 +134,10 @@ void EngineCore::process (float* left, float* right, int numSamples)
         // 1. sequencer + voices, sample by sample so steps land sample-accurately
         const double stepLen = samplesPerStep();
         const double swingDelay = (double) project.swing * 0.5 * stepLen;
+        // where the block starts, for the effect automation
+        const double autoPosition = (double) step + stepPhase / stepLen;
+        const double autoRate = playing ? 1.0 / stepLen : 0.0;
+        const int autoPattern = project.pattern;
 
         for (int i = 0; i < n; ++i)
         {
@@ -184,9 +188,8 @@ void EngineCore::process (float* left, float* right, int numSamples)
                 trackR[(size_t) i] = mono[i] * gr;
             }
 
-            auto& fx = trackFx[(size_t) t];
-            fx.setParams (tr.fx, project.bpm);
-            fx.process (trackL.data(), trackR.data(), n);
+            trackFx[(size_t) t].processAutomated (tr.fx, tr.fxAuto, autoPattern, autoPosition, autoRate, project.bpm,
+                                                  trackL.data(), trackR.data(), n);
 
             const float gain = levelToGain (tr.level);
             float peak = 0.0f;
@@ -214,8 +217,8 @@ void EngineCore::process (float* left, float* right, int numSamples)
         }
 
         // 3. master effects and level
-        masterFx.setParams (project.masterFx, project.bpm);
-        masterFx.process (outL, outR, n);
+        masterFx.processAutomated (project.masterFx, project.masterFxAuto, autoPattern, autoPosition, autoRate, project.bpm,
+                                   outL, outR, n);
 
         const float masterGain = levelToGain (project.masterLevel);
         float mp = 0.0f;

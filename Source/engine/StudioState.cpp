@@ -138,6 +138,8 @@ void applyToStudio (StudioState& s, const Command& c)
     {
         if (c.type == CommandType::SetFxParam && c.index >= 0 && c.index < kNumFxParams)
             s.masterFx[(size_t) c.index] = clamp01 (c.value);
+        else if (c.type == CommandType::SetFxAuto || c.type == CommandType::ClearFxAuto)
+            applyFxAuto (s.masterFxAuto, c);
         else if (c.type == CommandType::SetMasterLevel)
             s.masterLevel = clamp01 (c.value);
         return;
@@ -159,6 +161,7 @@ juce::var studioToVar (const StudioState& s)
     root->setProperty ("swing", s.swing);
     root->setProperty ("masterLevel", s.masterLevel);
     root->setProperty ("masterFx", fxToVar (s.masterFx));
+    root->setProperty ("masterFxAuto", s.masterFxAuto.toVar());
 
     juce::Array<juce::var> tools;
     for (int t = 0; t < kNumToolSlots; ++t)
@@ -202,6 +205,7 @@ bool studioFromVar (const juce::var& v, StudioState& out, std::array<juce::Strin
     s.swing = clamp01 ((float) v.getProperty ("swing", s.swing));
     s.masterLevel = clamp01 ((float) v.getProperty ("masterLevel", s.masterLevel));
     fxFromVar (v.getProperty ("masterFx", {}), s.masterFx);
+    s.masterFxAuto.fromVar (v.getProperty ("masterFxAuto", {}));
 
     for (auto& mix : s.tools)
         mix.active = false;

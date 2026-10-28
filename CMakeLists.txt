@@ -26,6 +26,7 @@ endif()
 
 set(ENGINE_SOURCES
     Source/engine/Params.cpp
+    Source/engine/Automation.cpp
     Source/engine/ProjectState.cpp
     Source/engine/Voice.cpp
     Source/engine/FxChain.cpp

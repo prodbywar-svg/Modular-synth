@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Automation.h"
 #include "Effects.h"
 #include "Params.h"
 
@@ -20,6 +21,13 @@ public:
     // tempo is needed for note-synced times.
     void setParams (const FxParams&, double bpm);
     void process (float* left, float* right, int numSamples);
+
+    // setParams + process, with recorded effect moves: from `position` (in
+    // steps, 0..16) on, the automated controls follow the pattern's moves,
+    // re-read every 32 samples. stepsPerSample = 0 when nothing is playing,
+    // which leaves the controls where they are set.
+    void processAutomated (const FxParams& base, const FxAutomation&, int pattern, double position, double stepsPerSample,
+                           double bpm, float* left, float* right, int numSamples);
 
 private:
     double sr = 48000.0;

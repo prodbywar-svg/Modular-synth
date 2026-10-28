@@ -14,6 +14,7 @@ $CXX --target=wasm32-wasi -std=c++17 -O3 -DNDEBUG -DMS_NO_JUCE=1 \
     -fno-exceptions -fvisibility=hidden -mexec-model=reactor \
     -ISource \
     Source/engine/Params.cpp \
+    Source/engine/Automation.cpp \
     Source/engine/ProjectState.cpp \
     Source/engine/Voice.cpp \
     Source/engine/FxChain.cpp \

@@ -32,6 +32,7 @@ struct StudioState
     float swing = 0.0f;
     float masterLevel = 0.7071f; // unity: each tool already has its own level
     FxParams masterFx = defaultFxParams();
+    FxAutomation masterFxAuto; // pattern 0 only: the studio loops one bar
     std::array<ToolMix, kNumToolSlots> tools = defaultToolMix(); // the drum machine and one bass synth
     ProjectState drums = makeDefaultProject(); // slot 0; its master rack is the drum bus
     std::array<BassState, kMaxBassSynths> bass = defaultBassSynths(); // slots 1-4

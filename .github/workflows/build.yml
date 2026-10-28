@@ -83,7 +83,7 @@ jobs:
       - name: Check it sounds the same as the desktop engine
         run: |
           clang++-18 -std=c++17 -O2 -DMS_NO_JUCE=1 -ISource \
-            Source/engine/{Params,ProjectState,Voice,FxChain,Effects,Hr16Bank,EngineCore}.cpp \
+            Source/engine/{Params,Automation,ProjectState,Voice,FxChain,Effects,Hr16Bank,EngineCore}.cpp \
             web/wasm/WebEngine.cpp web/tests/native_render.cpp -o native_render
           node web/tests/parity.mjs ./native_render
       - uses: actions/upload-pages-artifact@v4

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Automation.h"
 #include "Params.h"
 
 // MS_NO_JUCE builds the engine without JUCE (the browser version).
@@ -39,6 +40,7 @@ struct TrackState
     bool mute = false;
     bool solo = false;
     FxParams fx = defaultFxParams();
+    FxAutomation fxAuto; // recorded effect moves, per pattern
     std::array<Pattern, kNumPatterns> patterns {};
     const SampleData* sample = nullptr;
 };
@@ -52,6 +54,7 @@ struct ProjectState
     std::array<TrackState, kNumTracks> tracks {};
     float masterLevel = 0.5f; // -6 dB of headroom for the sum
     FxParams masterFx = defaultFxParams();
+    FxAutomation masterFxAuto;
     int pattern = 0;        // the pattern playing (or that will play)
     int queuedPattern = -1; // switches in when the current pattern ends
 };
@@ -103,7 +106,12 @@ enum class CommandType : std::uint8_t
     SetCable,    // track = row, index = the row its cable goes to, -1 = unplug
     SetKey,      // index = 0 (C) .. 11 (B); notes move into the scale
     SetScale,    // index = scale; notes move into the scale
+    // Effect automation (see Automation.h), on any rack of any tool.
+    SetFxAuto,   // track = rack (-1 = the tool's bus), index = fxAutoIndex, value (< 0 removes)
+    ClearFxAuto, // track = rack or kAllRacks, index = pattern (-1 all), value = control (-1 all)
 };
+
+constexpr int kAllRacks = -2;
 
 // Which part of the studio a command is for. Drum commands default to the drum
 // machine, so code written for the drum machine alone keeps working.
