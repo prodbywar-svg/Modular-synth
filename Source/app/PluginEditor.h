@@ -45,7 +45,9 @@ private:
     void selectPattern (int pattern);
     void copyPatternTo (int pattern); // copies the pattern on screen
     void clearPattern();              // empties the pattern on screen, resets all effects
-    void undo();                      // takes back the last clear, paste or random
+    void resetToDefaults();           // every sound, effect, level and the tempo back to defaults
+    void applySettings (const ms::ProjectState& target); // all but the sequences and loaded samples
+    void undo();                      // takes back the last clear, paste, random or reset
 
     void hitPad (int track, float velocity);
 
@@ -53,7 +55,7 @@ private:
     int selected = 0;
 
     DataButton playButton { "PLAY" }, stopButton { "STOP" }, recButton { "REC" };
-    DataButton exportButton { "EXPORT" }, saveButton { "SAVE" }, openButton { "OPEN" }, clearButton { "CLEAR" };
+    DataButton exportButton { "EXPORT" }, saveButton { "SAVE" }, openButton { "OPEN" }, clearButton { "CLEAR" }, resetButton { "RESET" };
     std::array<DataButton, ms::kNumPatterns> patternButtons { DataButton { "P1" }, DataButton { "P2" }, DataButton { "P3" }, DataButton { "P4" } };
     DataReadout bpmReadout, swingReadout, stepReadout, posReadout, rateReadout, takeReadout;
 
@@ -64,7 +66,7 @@ private:
     std::array<juce::uint32, ms::kNumTracks> lastPadKeyTime {};
     bool keyboardFocusRequested = false;
 
-    // What a clear / paste / random replaced, so Ctrl+Z can put it back.
+    // What a clear / paste / random / reset replaced, so Ctrl+Z can put it back.
     struct UndoSnapshot
     {
         int pattern = 0;
@@ -72,6 +74,8 @@ private:
         bool hasFx = false;
         std::array<ms::FxParams, ms::kNumTracks> fx {};
         ms::FxParams masterFx {};
+        bool hasSettings = false;  // a reset: every setting in `settings` comes back
+        ms::ProjectState settings {};
     };
     UndoSnapshot takeSnapshot (int pattern, bool withFx) const;
     std::optional<UndoSnapshot> lastUndo;

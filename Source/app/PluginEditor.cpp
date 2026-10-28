@@ -1013,9 +1013,10 @@ ModularSynthEditor::ModularSynthEditor (ModularSynthProcessor& p) : AudioProcess
     addAndMakeVisible (*grid);
     addAndMakeVisible (*panel);
 
-    for (auto* b : { &playButton, &stopButton, &recButton, &exportButton, &saveButton, &openButton, &clearButton })
+    for (auto* b : { &playButton, &stopButton, &recButton, &exportButton, &saveButton, &openButton, &clearButton, &resetButton })
         addAndMakeVisible (*b);
     clearButton.onClick = [this] { clearPattern(); };
+    resetButton.onClick = [this] { resetToDefaults(); };
     for (int i = 0; i < kNumPatterns; ++i)
     {
         auto& b = patternButtons[(size_t) i];
@@ -1252,6 +1253,55 @@ void ModularSynthEditor::clearPattern()
     setStatus ("CLEARED P" + juce::String (pattern + 1) + " + RESET ALL EFFECTS / CTRL+Z TO BRING IT BACK");
 }
 
+void ModularSynthEditor::applySettings (const ProjectState& target)
+{
+    // Only sends what differs. The voice and character go first because
+    // changing them resets that drum's voice controls.
+    const auto& state = proc.getUiState();
+    auto set = [this] (CommandType type, int track, int index, float now, float want) {
+        if (! juce::exactlyEqual (now, want))
+            send (type, track, index, want);
+    };
+    for (int t = 0; t < kNumTracks; ++t)
+    {
+        const auto& want = target.tracks[(size_t) t];
+        const auto& now = state.tracks[(size_t) t];
+        if (now.voice != want.voice)
+            send (CommandType::SetVoiceType, t, (int) want.voice, 0.0f);
+        if (now.character != want.character)
+            send (CommandType::SetCharacter, t, (int) want.character, 0.0f);
+        for (int i = 0; i < kNumVoiceParams; ++i)
+            set (CommandType::SetVoiceParam, t, i, now.voiceParams[(size_t) i], want.voiceParams[(size_t) i]);
+        set (CommandType::SetLevel, t, 0, now.level, want.level);
+        set (CommandType::SetPan, t, 0, now.pan, want.pan);
+        set (CommandType::SetMute, t, 0, now.mute ? 1.0f : 0.0f, want.mute ? 1.0f : 0.0f);
+        set (CommandType::SetSolo, t, 0, now.solo ? 1.0f : 0.0f, want.solo ? 1.0f : 0.0f);
+        for (int i = 0; i < kNumFxParams; ++i)
+            set (CommandType::SetFxParam, t, i, now.fx[(size_t) i], want.fx[(size_t) i]);
+    }
+    for (int i = 0; i < kNumFxParams; ++i)
+        set (CommandType::SetFxParam, -1, i, state.masterFx[(size_t) i], target.masterFx[(size_t) i]);
+    set (CommandType::SetMasterLevel, 0, 0, state.masterLevel, target.masterLevel);
+    set (CommandType::SetBpm, 0, 0, state.bpm, target.bpm);
+    set (CommandType::SetSwing, 0, 0, state.swing, target.swing);
+}
+
+void ModularSynthEditor::resetToDefaults()
+{
+    // Puts every drum (voice, character, controls, level, pan, mute, solo),
+    // every effects rack, the master and the tempo/swing back to how the app
+    // starts. The sequences and any loaded samples stay as they are.
+    const auto& state = proc.getUiState();
+    UndoSnapshot before;
+    before.hasSettings = true;
+    before.settings = state;
+
+    applySettings (makeDefaultProject());
+    lastUndo = before;
+    panel->refresh();
+    setStatus ("RESET ALL SETTINGS / SEQUENCES KEPT / CTRL+Z TO UNDO");
+}
+
 void ModularSynthEditor::undo()
 {
     if (! lastUndo.has_value())
@@ -1264,7 +1314,7 @@ void ModularSynthEditor::undo()
     for (int t = 0; t < kNumTracks; ++t)
     {
         const auto& now = state.tracks[(size_t) t].patterns[(size_t) snap.pattern];
-        for (int s = 0; s < kNumSteps; ++s)
+        for (int s = 0; s < kNumSteps && ! snap.hasSettings; ++s)
             if (! juce::exactlyEqual (now[(size_t) s], snap.steps[(size_t) t][(size_t) s]))
                 send (CommandType::SetStep, t, snap.pattern * kNumSteps + s, snap.steps[(size_t) t][(size_t) s]);
         if (snap.hasFx)
@@ -1274,7 +1324,14 @@ void ModularSynthEditor::undo()
     if (snap.hasFx)
         for (int i = 0; i < kNumFxParams; ++i)
             send (CommandType::SetFxParam, -1, i, snap.masterFx[(size_t) i]);
-    setStatus ("UNDONE / P" + juce::String (snap.pattern + 1) + (snap.hasFx ? " AND THE EFFECTS RESTORED" : " RESTORED"));
+    if (snap.hasSettings)
+    {
+        applySettings (snap.settings);
+        panel->refresh();
+        setStatus ("UNDONE / SETTINGS BEFORE THE RESET RESTORED");
+    }
+    else
+        setStatus ("UNDONE / P" + juce::String (snap.pattern + 1) + (snap.hasFx ? " AND THE EFFECTS RESTORED" : " RESTORED"));
     lastUndo.reset();
 }
 
@@ -1699,6 +1756,8 @@ void ModularSynthEditor::resized()
     }
     buttons.removeFromLeft (8);
     clearButton.setBounds (buttons.removeFromLeft (72));
+    buttons.removeFromLeft (6);
+    resetButton.setBounds (buttons.removeFromLeft (72));
 
     // readouts across the top right
     auto readouts = header.withTrimmedTop (8).withTrimmedLeft (380);
