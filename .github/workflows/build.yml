@@ -16,8 +16,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Steinberg's ASIO SDK, for the audio interfaces' own drivers (ASIO)
+      - name: Get the ASIO SDK
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://www.steinberg.net/asiosdk -OutFile asiosdk.zip
+          Expand-Archive asiosdk.zip -DestinationPath asiosdk
+          $header = Get-ChildItem asiosdk -Recurse -Filter iasiodrv.h | Select-Object -First 1
+          if (-not $header) { throw "iasiodrv.h not found in the ASIO SDK" }
+          "ASIO_INCLUDE=$($header.Directory.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Configure
-        run: cmake -S . -B build -A x64
+        shell: pwsh
+        run: cmake -S . -B build -A x64 "-DMS_ASIO_INCLUDE=$env:ASIO_INCLUDE"
 
       - name: Build
         run: cmake --build build --config Release --parallel

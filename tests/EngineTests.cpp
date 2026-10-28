@@ -934,7 +934,10 @@ StudioState looperOnlyStudio()
     for (int t = 0; t < kNumToolSlots; ++t)
         s.tools[(size_t) t].active = t == kFirstLooperTool;
     for (auto& l : s.loopers)
+    {
         l.bpm = s.bpm;
+        l.countIn = 0; // the tests below record from the first bar
+    }
     return s;
 }
 
@@ -1103,6 +1106,57 @@ void testLooperTakeReplays()
     folder.deleteRecursively();
 }
 
+void testLooperCountInAndDryMonitor()
+{
+    std::printf ("looper: a count-in clicks for a bar, then it records; dry monitoring skips the rack\n");
+    auto s = looperOnlyStudio();
+    s.loopers[0].countIn = 1;
+    auto e = liveLooper (s);
+    auto audio = emptyLoop (1);
+    std::vector<float> input ((size_t) (kBar * 2), 0.0f);
+    input[10000] = 0.5f;                // during the count-in: not recorded
+    input[(size_t) (kBar + 24100)] = 0.25f; // bar 2: the recording
+    const auto out = playLive (*e, input, kBar * 2 + 100, { { 0, loopCommand (CommandType::RecordLoop, 0, 0.0f, audio.get()) } });
+    CHECK (audio->length == kBar);
+    CHECK (std::abs (audio->left[24100] - 0.25f) < 1.0e-4f);
+    CHECK (std::abs (audio->left[10000]) < 1.0e-6f);
+    // clicks on the four beats of the count-in, nothing between them
+    float onBeat = 0.0f, between = 0.0f;
+    for (int beat = 0; beat < 4; ++beat)
+        for (int i = 0; i < 200; ++i)
+            onBeat = std::max (onBeat, std::abs (out.l[(size_t) (beat * 24000 + i)]));
+    for (int i = 4000; i < 23000; ++i)
+        between = std::max (between, std::abs (out.l[(size_t) i]));
+    std::printf ("  click %.3f, between %.5f\n", (double) onBeat, (double) between);
+    CHECK (onBeat > 0.1f && between < 1.0e-3f);
+
+    // a take of it: the export records the same, with no click
+    auto offline = liveLooper (s);
+    offline->setRecordsInput (false);
+    auto copy = emptyLoop (1);
+    const auto quiet = playLive (*offline, {}, kBar, { { 0, loopCommand (CommandType::RecordLoop, 0, 0.0f, copy.get()) } });
+    float clickOffline = 0.0f;
+    for (auto v : quiet.l)
+        clickOffline = std::max (clickOffline, std::abs (v));
+    CHECK (clickOffline <= 0.0f);
+
+    // dry: the input as it comes in, past the rack's low filter
+    auto d = looperOnlyStudio();
+    d.loopers[0].monitor = true;
+    d.loopers[0].monitorDry = true;
+    d.loopers[0].masterFx[fxCutoff] = 0.05f; // a low filter
+    auto dry = liveLooper (d);
+    std::vector<float> hit ((size_t) kBar, 0.0f);
+    hit[1000] = 0.5f;
+    const auto heard = playLive (*dry, hit, kBar, {});
+    std::printf ("  dry %.4f\n", (double) heard.l[1000]);
+    CHECK (std::abs (heard.l[1000] - 0.5f) < 1.0e-3f);
+    dry->apply (loopCommand (CommandType::SetMonitorDry, 0, 0.0f));
+    const auto wet = playLive (*dry, hit, kBar, {}, false);
+    std::printf ("  through the rack %.4f\n", (double) wet.l[1000]);
+    CHECK (std::abs (wet.l[1000] - 0.5f) > 0.05f);
+}
+
 void testLooperSaveAndOpen()
 {
     std::printf ("looper settings save and open\n");
@@ -1114,6 +1168,8 @@ void testLooperSaveAndOpen()
     auto& l = s.loopers[0];
     l.input = LoopInput::In2;
     l.monitor = true;
+    l.monitorDry = true;
+    l.countIn = 2;
     l.inputGain = 0.4f;
     l.pan = 0.2f;
     l.pattern = 2;
@@ -1132,6 +1188,7 @@ void testLooperSaveAndOpen()
     const auto& m = q.loopers[0];
     CHECK (q.tools[kFirstLooperTool].active);
     CHECK (m.input == LoopInput::In2 && m.monitor && m.pattern == 2);
+    CHECK (m.monitorDry && m.countIn == 2);
     CHECK (std::abs (m.inputGain - 0.4f) < 1.0e-6f && std::abs (m.pan - 0.2f) < 1.0e-6f);
     CHECK (m.slots[1].bars == 8 && m.slots[1].slices[3] == kMuteSlice && m.slots[1].slices[5] == 0 && m.slots[1].slices[6] == 6);
     CHECK (m.slots[2].audio == nullptr); // the caller loads it
@@ -1225,6 +1282,7 @@ int main (int argc, char** argv)
     testLooperRecordsAndPlays();
     testLooperLatencyAndOverdub();
     testLooperTakeReplays();
+    testLooperCountInAndDryMonitor();
     testLooperSaveAndOpen();
 
     if (failures == 0)

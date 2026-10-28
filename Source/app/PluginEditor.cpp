@@ -215,9 +215,11 @@ private:
             int loops = 0;
             for (const auto& slot : l.slots)
                 loops += slot.audio != nullptr ? 1 : 0;
-            juce::String now = loopInputName (l.input) + juce::String (l.monitor ? " MON" : "");
+            juce::String now = loopInputName (l.input) + juce::String (l.monitor ? (l.monitorDry ? " MON DRY" : " MON FX") : "");
             if (readout.status == LooperEngine::Status::Waiting)
                 now = "REC WAITS FOR THE BAR";
+            else if (readout.status == LooperEngine::Status::CountIn)
+                now = "COUNT-IN " + juce::String (readout.countBeats);
             else if (readout.status == LooperEngine::Status::Recording)
                 now = (readout.overdub ? "OVERDUB " : "REC ") + juce::String (juce::roundToInt (readout.progress * 100.0)) + "%";
             return "P" + juce::String (l.pattern + 1) + " // " + now + " // " + look::pad (loops, 2) + " OF 04 LOOPS";

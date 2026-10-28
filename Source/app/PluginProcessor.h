@@ -72,6 +72,7 @@ public:
         int slot = 0;
         bool overdub = false;
         double progress = 0.0; // of the recording, 0..1
+        int countBeats = 0;     // beats of count-in left, while counting in
         double position = -1.0; // of the loop playing, 0..1, -1 = none
     };
     LooperReadout looperReadout (int tool) const;
@@ -220,7 +221,7 @@ private:
     std::atomic<double> stepPositionValue { 0.0 };
     bool autoArmed = false; // message thread
     std::array<std::atomic<int>, ms::kNumToolSlots> currentPatterns {}, queuedPatterns {};
-    std::array<std::atomic<int>, ms::kMaxLoopers> looperStatus {}, looperSlot {};
+    std::array<std::atomic<int>, ms::kMaxLoopers> looperStatus {}, looperSlot {}, looperCount {};
     std::array<std::atomic<bool>, ms::kMaxLoopers> looperOverdub {};
     std::array<std::atomic<double>, ms::kMaxLoopers> looperProgress {}, looperPosition {};
     std::array<std::atomic<const ms::LoopAudio*>, ms::kMaxLoopers> recordingLoops {};

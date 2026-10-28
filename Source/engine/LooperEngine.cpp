@@ -31,7 +31,10 @@ void LooperEngine::prepare (double sampleRate, int maxBlockSize)
     maxBlock = std::max (1, maxBlockSize);
     bufL.assign ((size_t) maxBlock, 0.0f);
     bufR.assign ((size_t) maxBlock, 0.0f);
+    dryL.assign ((size_t) maxBlock, 0.0f);
+    dryR.assign ((size_t) maxBlock, 0.0f);
     taps.assign ((size_t) (kLooperTracks * maxBlock), 0.0f);
+    clickBuf.assign ((size_t) maxBlock, 0.0f);
     fx.prepare (sr);
     reset();
 }
@@ -46,6 +49,7 @@ void LooperEngine::reset()
     barStart = playing;
     origin.fill (0);
     rec = {};
+    clickAge = -1;
     stepChanged = true;
     peaks.fill (0.0f);
 }
@@ -73,6 +77,7 @@ void LooperEngine::apply (const Command& c)
         rec.overdub = c.value > 0.5f && c.loop->length > 0;
         rec.buffer = c.loop;
         rec.latency = std::max (0, c.track);
+        rec.countLeft = looper.countIn;
         return;
     }
     if (c.type == CommandType::CancelLoopRecord)
@@ -108,7 +113,7 @@ void LooperEngine::setPlaying (bool shouldPlay)
         barStart = true;
         stepChanged = true;
     }
-    if (! shouldPlay && playing && rec.status == Status::Recording)
+    if (! shouldPlay && playing && (rec.status == Status::Recording || rec.status == Status::CountIn))
         rec = {}; // a recording cut short by Stop is dropped
     playing = shouldPlay;
 }
@@ -143,6 +148,14 @@ double LooperEngine::recordProgress() const
     return std::clamp (done / bars, 0.0, 1.0);
 }
 
+int LooperEngine::countInBeats() const
+{
+    if (rec.status != Status::CountIn)
+        return 0;
+    const int stepsLeft = rec.countLeft * kNumSteps + (kNumSteps - step);
+    return (stepsLeft + 3) / 4;
+}
+
 double LooperEngine::loopPosition() const
 {
     const auto& slot = looper.slots[(size_t) looper.pattern];
@@ -168,7 +181,12 @@ void LooperEngine::onBarStart()
             finishRecording();
     }
 
-    if (rec.status == Status::Waiting)
+    if ((rec.status == Status::Waiting || rec.status == Status::CountIn) && rec.countLeft > 0)
+    {
+        rec.status = Status::CountIn;
+        --rec.countLeft;
+    }
+    else if (rec.status == Status::Waiting || rec.status == Status::CountIn)
     {
         rec.status = Status::Recording;
         rec.startBar = barCount;
@@ -308,9 +326,30 @@ void LooperEngine::process (float* left, float* right, int numSamples)
                     finishRecording();
             }
 
-            const float monitor = looper.monitor ? 1.0f : 0.0f;
-            bufL[(size_t) i] = (ll + il * monitor) * panL;
-            bufR[(size_t) i] = (lr + ir * monitor) * panR;
+            // the input heard through the rack goes in here; heard dry, it
+            // waits in the taps and joins after the rack
+            const float throughRack = looper.monitor && ! looper.monitorDry ? 1.0f : 0.0f;
+            bufL[(size_t) i] = (ll + il * throughRack) * panL;
+            bufR[(size_t) i] = (lr + ir * throughRack) * panR;
+            dryL[(size_t) i] = looper.monitor && looper.monitorDry ? il * panL : 0.0f;
+            dryR[(size_t) i] = looper.monitor && looper.monitorDry ? ir * panR : 0.0f;
+
+            // the count-in: a click on every beat, higher on the bar
+            if (live && rec.status == Status::CountIn && step % 4 == 0 && stepPhase < 1.0)
+            {
+                clickAge = 0;
+                clickAccent = step == 0;
+            }
+            float click = 0.0f;
+            if (clickAge >= 0)
+            {
+                const double t = (double) clickAge / sr;
+                const double freq = clickAccent ? 1760.0 : 1320.0;
+                click = (float) (std::sin (2.0 * 3.141592653589793 * freq * t) * std::exp (-t / 0.008)) * (clickAccent ? 0.35f : 0.25f);
+                if (++clickAge > (int) (0.06 * sr))
+                    clickAge = -1;
+            }
+            clickBuf[(size_t) i] = click;
 
             if (playing)
             {
@@ -337,10 +376,12 @@ void LooperEngine::process (float* left, float* right, int numSamples)
         float* loopTap = taps.data() + kLoopTrack * maxBlock;
         for (int i = 0; i < n; ++i)
         {
-            outL[i] = bufL[(size_t) i] * gain;
-            outR[i] = bufR[(size_t) i] * gain;
+            outL[i] = (bufL[(size_t) i] + dryL[(size_t) i]) * gain;
+            outR[i] = (bufR[(size_t) i] + dryR[(size_t) i]) * gain;
             loopTap[i] = 0.5f * (outL[i] + outR[i]);
             peak = std::max ({ peak, std::abs (outL[i]), std::abs (outR[i]) });
+            outL[i] += clickBuf[(size_t) i];
+            outR[i] += clickBuf[(size_t) i];
         }
         peaks[kLoopTrack] = peak;
         peaks[kInputTrack] = inPeak;

@@ -102,6 +102,19 @@ target_link_libraries(ModularSynth
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)
 
+# ASIO (Focusrite and other interfaces' own low-latency drivers) needs the
+# headers from Steinberg's ASIO SDK, which can't be kept in this repo. The
+# Windows build downloads the SDK and passes its "common" folder here.
+set(MS_ASIO_INCLUDE "" CACHE PATH "The ASIO SDK's common folder (holds iasiodrv.h); empty = no ASIO")
+if(WIN32 AND MS_ASIO_INCLUDE)
+    if(NOT EXISTS "${MS_ASIO_INCLUDE}/iasiodrv.h")
+        message(FATAL_ERROR "MS_ASIO_INCLUDE has no iasiodrv.h: ${MS_ASIO_INCLUDE}")
+    endif()
+    target_compile_definitions(ModularSynth PUBLIC JUCE_ASIO=1)
+    target_include_directories(ModularSynth PUBLIC "${MS_ASIO_INCLUDE}")
+    message(STATUS "ASIO on, from ${MS_ASIO_INCLUDE}")
+endif()
+
 # The studio state is copied whole (a recording's start, undo, opening a
 # project), so give every thread room for it on Windows, whose default stack
 # is only 1 MB.

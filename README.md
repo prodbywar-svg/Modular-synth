@@ -124,13 +124,20 @@ under the controls. Each row and the **BASS BUS** have the full effects rack.
 
 ## The looper
 
+**For the lowest latency**, open **INPUT > AUDIO DEVICE AND INPUTS...**, set the
+audio device type to **ASIO** and pick your interface (for example "Focusrite USB
+ASIO"), then set a small buffer size (64 to 128 samples) in the interface's own
+panel. Windows' own audio ("Windows Audio") adds much more delay.
+
 Records your audio interface into a loop that plays on the studio clock. It has
 four loop slots, **P1-P4**, that switch at the end of a bar like patterns do.
 
 | Do this | To |
 | --- | --- |
 | **INPUT** | pick **IN 1** or **IN 2** (on both sides) or **IN 1+2** (a stereo pair). **AUDIO DEVICE AND INPUTS...** in the same menu picks the interface and which of its inputs are 1 and 2 |
-| **MON** / `M` | hear the input through the looper's effects rack (use headphones, or turn it down, to avoid feedback) |
+| **MON** / `M` | hear the input while you play (use headphones, or turn it down, to avoid feedback) |
+| **FX** / **DRY** (next to MON) / `Shift+M` | **FX**: hear the input through the looper's effects rack. **DRY**: hear it as it comes in. Recordings are always dry either way |
+| **COUNT 1** | the count-in: clicks on the beats for 1, 2 or 4 bars before a recording starts, or **NO COUNT**. The click is never recorded or exported |
 | **2 BARS** | how long the slot's next recording is: 1, 2, 4 or 8 bars |
 | **REC LOOP** / `L` | record into the slot on screen from the next bar (from the start when the transport is stopped: it starts it). When the bars are done the loop plays straight away. Press again to cancel |
 | **OVERDUB** / `O` | record once round the loop on top of what is there, from the next bar |
@@ -248,7 +255,9 @@ libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxext-dev
 libxcomposite-dev libgl1-mesa-dev`.
 
 Every push builds the Windows app on GitHub Actions; pushes to `main` publish it
-as a release.
+as a release. The Windows build downloads Steinberg's ASIO SDK for ASIO support;
+locally pass `-DMS_ASIO_INCLUDE=<asiosdk>/common` to turn it on. ASIO is a
+trademark and software of Steinberg Media Technologies GmbH.
 
 The browser version (`web/`) compiles the same `Source/engine` code to
 WebAssembly with plain clang (no JUCE: `MS_NO_JUCE`), and pushes to `main`

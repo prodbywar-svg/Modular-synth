@@ -18,6 +18,15 @@ int nearestLoopLength (int bars)
             best = l;
     return best;
 }
+
+int nearestCountIn (int bars)
+{
+    int best = kCountIns[0];
+    for (int c : kCountIns)
+        if (std::abs (c - bars) < std::abs (best - bars))
+            best = c;
+    return best;
+}
 } // namespace
 
 bool InputRecording::append (const float* l, const float* r, int n, const std::function<float*()>& next)
@@ -97,6 +106,12 @@ void applyToLooper (LooperState& l, const Command& c)
             break;
         case CommandType::SetLoopMonitor:
             l.monitor = c.value > 0.5f;
+            break;
+        case CommandType::SetMonitorDry:
+            l.monitorDry = c.value > 0.5f;
+            break;
+        case CommandType::SetCountIn:
+            l.countIn = nearestCountIn ((int) std::lround (c.value));
             break;
         case CommandType::SetInputGain:
             l.inputGain = clamp01 (c.value);
@@ -180,6 +195,8 @@ juce::var looperToVar (const LooperState& l, const LoopFiles& files)
     root->setProperty ("pattern", l.pattern);
     root->setProperty ("input", loopInputName (l.input));
     root->setProperty ("monitor", l.monitor);
+    root->setProperty ("monitorDry", l.monitorDry);
+    root->setProperty ("countIn", l.countIn);
     root->setProperty ("inputGain", l.inputGain);
     root->setProperty ("masterLevel", l.masterLevel);
     root->setProperty ("pan", l.pan);
@@ -220,6 +237,8 @@ bool looperFromVar (const juce::var& v, LooperState& out, LoopFiles& files)
         if (input == loopInputName ((LoopInput) i))
             l.input = (LoopInput) i;
     l.monitor = (bool) v.getProperty ("monitor", false);
+    l.monitorDry = (bool) v.getProperty ("monitorDry", false);
+    l.countIn = nearestCountIn ((int) v.getProperty ("countIn", l.countIn));
     l.inputGain = clamp01 ((float) v.getProperty ("inputGain", l.inputGain));
     l.masterLevel = clamp01 ((float) v.getProperty ("masterLevel", l.masterLevel));
     l.pan = clamp01 ((float) v.getProperty ("pan", l.pan));
