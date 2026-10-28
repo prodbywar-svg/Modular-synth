@@ -84,6 +84,15 @@ void EngineCore::setPlaying (bool shouldPlay)
     playing = shouldPlay;
 }
 
+void EngineCore::joinClock (int stepIndex, double phaseInSamples)
+{
+    setPlaying (true);
+    step = ((stepIndex % kNumSteps) + kNumSteps) % kNumSteps;
+    stepPhase = std::max (0.0, phaseInSamples);
+    const double triggerAt = (step % 2 == 1) ? (double) project.swing * 0.5 * samplesPerStep() : 0.0;
+    stepFired = stepPhase > triggerAt;
+}
+
 double EngineCore::samplesPerStep() const
 {
     return sr * 60.0 / (double) project.bpm / 4.0;

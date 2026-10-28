@@ -7,9 +7,9 @@
 #include <atomic>
 #include <optional>
 
-// Runs the engine on the audio thread. The UI never touches the engine
+// Runs the studio engine on the audio thread. The UI never touches the engine
 // directly: it sends Commands through a lock-free queue, keeps its own copy of
-// the project, and reads meters back through atomics.
+// the studio, and reads meters back through atomics.
 class ModularSynthProcessor : public juce::AudioProcessor
 {
 public:
@@ -22,8 +22,16 @@ public:
 
     // ---- message thread ----------------------------------------------------
     void send (const ms::Command&);
-    const ms::ProjectState& getUiState() const { return uiState; }
-    void replaceProject (const ms::ProjectState&);
+    const ms::StudioState& getStudioState() const { return uiState; }
+    // The drum machine's part of the studio.
+    const ms::ProjectState& getUiState() const { return uiState.drums; }
+    void replaceStudio (const ms::StudioState&);
+
+    // Where the tool windows sit and which are open. Saved with the project;
+    // the number changes whenever a newly opened project brings its own.
+    juce::var getWindowLayout() const { return windowLayout; }
+    void setWindowLayout (const juce::var& v) { windowLayout = v; }
+    int getWindowLayoutVersion() const { return windowLayoutVersion; }
 
     // Loads a WAV/AIFF/FLAC as mono. The sample stays alive for the session.
     const ms::SampleData* loadSample (const juce::File&, juce::String& error);
@@ -52,6 +60,10 @@ public:
     std::int64_t playedSamples() const { return playedSampleCount.load(); }
     int recordedEvents() const { return recordedEventCount.load(); }
     float masterPeak() const { return masterPeakValue.load(); }
+    float drumBusPeak() const { return drumBusPeakValue.load(); }
+    float toolPeak (int tool) const { return toolPeaks[(size_t) tool].load(); }
+    // history entry age 0 = newest, like trackHistory
+    float toolHistory (int tool, int age) const;
     float trackPeak (int t) const { return trackPeaks[(size_t) t].load(); }
     // history entry age 0 = newest
     float trackHistory (int t, int age) const;
@@ -91,15 +103,18 @@ private:
     void handleOnAudioThread (const ms::Command&);
     void finishRecording();
     void recordEvent (const ms::Command&);
+    void loadSamplePaths (ms::StudioState&, const std::array<juce::String, ms::kNumTracks>&, juce::String& error);
 
-    ms::EngineCore engine;
+    ms::StudioEngine engine;
 
     // UI -> audio queue
     juce::AbstractFifo fifo { 8192 };
     std::vector<ms::Command> fifoBuffer = std::vector<ms::Command> (8192);
 
-    // message-thread copy of the project
-    ms::ProjectState uiState = ms::makeDefaultProject();
+    // message-thread copy of the studio
+    ms::StudioState uiState = ms::makeDefaultStudio();
+    juce::var windowLayout;
+    int windowLayoutVersion = 0;
     std::vector<std::unique_ptr<ms::SampleData>> samples;
 
     // recording: two takes so a new recording never overwrites one the UI is
@@ -116,7 +131,10 @@ private:
     std::atomic<int> stepIndex { 0 }, recordedEventCount { 0 };
     std::atomic<int> currentPatternIndex { 0 }, queuedPatternIndex { -1 };
     std::atomic<std::int64_t> recordedSampleCount { 0 }, playedSampleCount { 0 };
-    std::atomic<float> masterPeakValue { 0.0f };
+    std::atomic<float> masterPeakValue { 0.0f }, drumBusPeakValue { 0.0f };
+    std::array<std::atomic<float>, ms::kNumToolSlots> toolPeaks {};
+    std::vector<std::atomic<float>> toolHistoryValues = std::vector<std::atomic<float>> (ms::kNumToolSlots * kHistoryLength);
+    std::array<float, ms::kNumToolSlots> toolWindowPeak {};
     std::atomic<double> sampleRateForUi { 48000.0 };
     std::array<std::atomic<float>, ms::kNumTracks> trackPeaks {};
     std::array<std::atomic<int>, ms::kNumTracks> hitCounts {};

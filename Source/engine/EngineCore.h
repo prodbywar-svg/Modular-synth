@@ -27,6 +27,10 @@ public:
 
     void setPlaying (bool shouldPlay);
     bool isPlaying() const { return playing; }
+    // Starts playing from the middle of a step, so a sequencer added while the
+    // others play lands exactly on their beat.
+    void joinClock (int stepIndex, double phaseInSamples);
+    double stepPhaseSamples() const { return stepPhase; }
 
     // -1 renders the full mix. A track index renders only that track's share of
     // the master (after its effects and the master effects): one stem.

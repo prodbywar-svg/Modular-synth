@@ -89,7 +89,18 @@ enum class CommandType : std::uint8_t
     Stop,
     RecordStart,
     RecordStop,
+    // The studio (see StudioState.h), added after the drum commands so the
+    // browser version's numbering stays the same.
+    AddTool,     // tool: adds it with its default sound
+    RemoveTool,  // tool
+    SetToolMute, // tool, value 0/1
+    SetToolSolo, // tool, value 0/1
 };
+
+// Which part of the studio a command is for. Drum commands default to the drum
+// machine, so code written for the drum machine alone keeps working.
+constexpr int kStudio = -1; // the studio master rack and level
+constexpr int kDrumTool = 0;
 
 struct Command
 {
@@ -98,6 +109,7 @@ struct Command
     int index = 0;
     float value = 0.0f;
     const SampleData* sample = nullptr;
+    int tool = kDrumTool;
 };
 
 struct TimedCommand
@@ -117,5 +129,7 @@ juce::var projectToVar (const ProjectState&);
 // Sample paths are returned so the caller can load them; sample pointers in the
 // returned state are null.
 bool projectFromVar (const juce::var&, ProjectState&, std::array<juce::String, kNumTracks>& samplePaths);
+juce::var fxToVar (const FxParams&);
+void fxFromVar (const juce::var&, FxParams&);
 #endif
 } // namespace ms

@@ -5,968 +5,283 @@ using namespace ms;
 namespace
 {
 constexpr int kHeaderHeight = 84;
-constexpr int kPanelHeight = 232;
+constexpr int kMasterHeight = 232;
 constexpr int kStatusHeight = 24;
 constexpr int kMargin = 16;
+constexpr int kStripHeight = 64;
+constexpr int kToolsLabelHeight = 26;
 
-// Keys that play pads 1-8: number row and home row.
-constexpr char kPadKeys[kNumTracks][2] = { { '1', 'a' }, { '2', 's' }, { '3', 'd' }, { '4', 'f' },
-                                          { '5', 'g' }, { '6', 'h' }, { '7', 'j' }, { '8', 'k' } };
-
-juce::String formatTime (double seconds)
+const char* toolTitle (int tool)
 {
-    const int totalMs = (int) std::round (seconds * 1000.0);
-    return look::pad (totalMs / 60000, 2) + ":" + look::pad ((totalMs / 1000) % 60, 2) + "." + look::pad (totalMs % 1000, 3);
-}
-
-juce::String formatDb (float gain)
-{
-    const float db = gainToDb (gain);
-    return db <= -99.0f ? juce::String ("-INF dB") : juce::String (db, 1) + " dB";
-}
-
-juce::String formatPan (float v)
-{
-    const int p = juce::roundToInt (panToBalance (v) * 100.0f);
-    if (p == 0)
-        return "C";
-    return (p < 0 ? "L " : "R ") + juce::String (std::abs (p));
-}
-
-// In-place radix-2 FFT; n must be a power of two.
-void fft (float* re, float* im, int n)
-{
-    for (int i = 1, j = 0; i < n; ++i)
+    switch (toolKind (tool))
     {
-        int bit = n >> 1;
-        for (; (j & bit) != 0; bit >>= 1)
-            j ^= bit;
-        j ^= bit;
-        if (i < j)
-        {
-            std::swap (re[i], re[j]);
-            std::swap (im[i], im[j]);
-        }
+        case ToolKind::Drums: return "DRUM MACHINE";
+        case ToolKind::Count: break;
     }
-    for (int len = 2; len <= n; len <<= 1)
-    {
-        const double angle = -2.0 * juce::MathConstants<double>::pi / len;
-        const float wr = (float) std::cos (angle), wi = (float) std::sin (angle);
-        for (int i = 0; i < n; i += len)
-        {
-            float cr = 1.0f, ci = 0.0f;
-            for (int k = 0; k < len / 2; ++k)
-            {
-                const int a = i + k, b = i + k + len / 2;
-                const float vr = re[b] * cr - im[b] * ci, vi = re[b] * ci + im[b] * cr;
-                re[b] = re[a] - vr;
-                im[b] = im[a] - vi;
-                re[a] += vr;
-                im[a] += vi;
-                const float next = cr * wr - ci * wi;
-                ci = cr * wi + ci * wr;
-                cr = next;
-            }
-        }
-    }
-}
-
-template <size_t N>
-std::array<float, N> makeHannWindow()
-{
-    std::array<float, N> w {};
-    for (size_t i = 0; i < N; ++i)
-        w[i] = 0.5f - 0.5f * std::cos (2.0f * juce::MathConstants<float>::pi * (float) i / (float) N);
-    return w;
-}
-
-class DatamaticsLookAndFeel : public juce::LookAndFeel_V4
-{
-public:
-    DatamaticsLookAndFeel()
-        : LookAndFeel_V4 (juce::LookAndFeel_V4::ColourScheme (
-            look::background, look::background, look::background, look::dim, look::ink, look::faint,
-            look::background, look::ink, look::ink))
-    {
-        setColour (juce::PopupMenu::backgroundColourId, look::background);
-        setColour (juce::PopupMenu::textColourId, look::ink);
-        setColour (juce::PopupMenu::highlightedBackgroundColourId, look::ink);
-        setColour (juce::PopupMenu::highlightedTextColourId, look::background);
-        setColour (juce::ResizableWindow::backgroundColourId, look::background);
-        setColour (juce::TextButton::buttonColourId, look::background);
-        setColour (juce::ComboBox::backgroundColourId, look::background);
-        setColour (juce::ComboBox::outlineColourId, look::dim);
-    }
-
-    juce::Font getPopupMenuFont() override { return look::mono (13.0f); }
-    juce::Font getTextButtonFont (juce::TextButton&, int) override { return look::mono (12.0f, true); }
-    juce::Font getLabelFont (juce::Label&) override { return look::mono (12.0f); }
-    juce::Font getComboBoxFont (juce::ComboBox&) override { return look::mono (12.0f); }
-};
-
-DatamaticsLookAndFeel& sharedLookAndFeel()
-{
-    static DatamaticsLookAndFeel laf;
-    return laf;
+    return "TOOL";
 }
 } // namespace
 
 // =============================================================================
-// Track grid: 8 tracks as horizontal data rows, plus the master row.
+// A tool's window. Closing it only hides it: the tool keeps playing.
 
-class TrackGrid : public juce::Component
+class ToolWindow : public juce::DocumentWindow
 {
 public:
-    explicit TrackGrid (ModularSynthEditor& e) : editor (e) {}
+    ToolWindow (const juce::String& name, std::unique_ptr<juce::Component> content)
+        : DocumentWindow (name, look::background, juce::DocumentWindow::minimiseButton | juce::DocumentWindow::closeButton)
+    {
+        setUsingNativeTitleBar (true);
+        setContentOwned (content.release(), true);
+        setResizable (true, false);
+    }
+
+    void closeButtonPressed() override
+    {
+        setVisible (false);
+        notify();
+    }
+
+    void moved() override
+    {
+        DocumentWindow::moved();
+        notify();
+    }
+
+    void resized() override
+    {
+        DocumentWindow::resized();
+        notify();
+    }
+
+    std::function<void()> onTick, onLayoutChange;
+
+private:
+    void notify()
+    {
+        if (onLayoutChange)
+            onLayoutChange();
+    }
+};
+
+// =============================================================================
+// One tool's row in the studio window: its output as a scrolling barcode,
+// its level, mute / solo, and the buttons that show its window or remove it.
+
+class ToolStrip : public juce::Component
+{
+public:
+    ToolStrip (ModularSynthEditor& e, int t) : editor (e), tool (t)
+    {
+        for (auto* b : { &addButton, &showButton, &removeButton, &muteButton, &soloButton })
+            addAndMakeVisible (*b);
+        addAndMakeVisible (level);
+
+        addButton.setText ("+ ADD " + juce::String (toolTitle (tool)));
+        addButton.onClick = [this] { editor.addTool (tool); };
+        showButton.onClick = [this] { editor.showToolWindow (tool, ! editor.isToolWindowShowing (tool)); };
+        removeButton.onClick = [this] { editor.removeTool (tool); };
+        muteButton.onClick = [this] {
+            editor.send (CommandType::SetToolMute, tool, 0, 0, mix().mute ? 0.0f : 1.0f);
+        };
+        soloButton.onClick = [this] {
+            editor.send (CommandType::SetToolSolo, tool, 0, 0, mix().solo ? 0.0f : 1.0f);
+        };
+
+        level.setLabel ("LEVEL");
+        level.setDefault (ProjectState().masterLevel);
+        level.format = [] (float v) { return formatDb (levelToGain (v)); };
+        level.onChange = [this] (float v) { editor.send (CommandType::SetMasterLevel, tool, 0, 0, v); };
+    }
 
     void tick()
     {
-        auto& proc = editor.processor();
-        for (int t = 0; t < kNumTracks; ++t)
+        const int active = mix().active ? 1 : 0;
+        if (active != shownActive)
         {
-            const int hits = proc.trackHitCount (t);
-            if (hits != lastHits[(size_t) t])
-            {
-                lastHits[(size_t) t] = hits;
-                flash[(size_t) t] = 1.0f;
-            }
-            else
-            {
-                flash[(size_t) t] *= 0.82f;
-            }
+            shownActive = active;
+            for (juce::Component* c : { (juce::Component*) &showButton, (juce::Component*) &removeButton,
+                                        (juce::Component*) &muteButton, (juce::Component*) &soloButton, (juce::Component*) &level })
+                c->setVisible (active);
+            addButton.setVisible (active == 0);
         }
+        const bool showing = editor.isToolWindowShowing (tool);
+        showButton.setText (showing ? "HIDE" : "OPEN");
+        showButton.setOn (showing);
+        muteButton.setOn (mix().mute);
+        soloButton.setOn (mix().solo);
+        if (toolKind (tool) == ToolKind::Drums)
+            level.setValue (editor.processor().getUiState().masterLevel);
         repaint();
     }
 
     void paint (juce::Graphics& g) override
     {
-        auto& proc = editor.processor();
-        const auto& state = proc.getUiState();
-        const auto geo = geometry();
-        const int viewed = viewedPattern (state);
-        const bool playing = proc.isPlaying() && proc.currentPattern() == viewed;
-        const int playStep = proc.currentStep();
+        const float w = (float) getWidth(), h = (float) getHeight(), mid = h * 0.5f;
+        g.setColour (look::faint);
+        g.fillRect (0.0f, 0.0f, w, 1.0f);
 
-        for (int t = 0; t < kNumTracks; ++t)
-            paintTrack (g, geo, t, state.tracks[(size_t) t], viewed, playing ? playStep : -1);
+        const juce::Rectangle<float> tag (4.0f, 6.0f, 30.0f, h - 12.0f);
+        const bool active = mix().active;
+        g.setColour (active ? look::dim : look::faint);
+        g.drawRect (tag, 1.0f);
+        g.setFont (look::mono (11.0f, true));
+        g.setColour (active ? look::ink : look::dim);
+        g.drawText (look::pad (tool + 1, 2), tag, juce::Justification::centred);
 
-        paintMaster (g, geo, state);
-
-        // step ruler along the top: step numbers, beats brighter
-        g.setFont (look::mono (9.0f));
-        for (int s = 0; s < kNumSteps; ++s)
-        {
-            g.setColour (s % 4 == 0 ? look::ink.withAlpha (0.7f) : look::dim);
-            g.drawText (look::pad (s + 1, 2), juce::Rectangle<float> (geo.stepX (s), 0.0f, geo.stepW, (float) kRulerHeight),
-                        juce::Justification::centred);
-        }
-        g.setFont (look::mono (9.5f, true));
-        g.setColour (state.queuedPattern >= 0 ? look::blue : look::ink);
-        g.drawText ("PATTERN P" + juce::String (viewed + 1) + (state.queuedPattern >= 0 ? " / QUEUED" : ""),
-                    juce::Rectangle<float> (geo.nameX + 10.0f, 0.0f, geo.stepsX - geo.nameX - 14.0f, (float) kRulerHeight),
-                    juce::Justification::centredLeft);
-        g.setFont (look::mono (9.0f));
+        g.setFont (look::mono (13.0f, true));
+        g.drawText (toolTitle (tool), juce::Rectangle<float> (48.0f, 4.0f, 220.0f, mid - 2.0f), juce::Justification::bottomLeft);
+        g.setFont (look::mono (9.5f));
         g.setColour (look::dim);
-        g.drawText ("SIGNAL // " + juce::String (ModularSynthProcessor::kHistoryLength) + " x "
-                        + juce::String (ModularSynthProcessor::kHistoryWindow) + " SMP",
-                    juce::Rectangle<float> (geo.barcodeX, 0.0f, geo.barcodeW, (float) kRulerHeight),
-                    juce::Justification::centredLeft);
+        g.drawText (active ? summary() : juce::String ("REMOVED // NOT IN THE PROJECT"),
+                    juce::Rectangle<float> (48.0f, mid + 2.0f, 220.0f, mid - 6.0f), juce::Justification::topLeft, true);
 
-        // playhead: the one red line
-        if (playing)
+        if (! active)
+            return;
+
+        // the tool's output, newest on the right: one line per history entry
+        const auto& proc = editor.processor();
+        const auto box = barcodeArea().toFloat();
+        const int columns = juce::jmin (ModularSynthProcessor::kHistoryLength, (int) box.getWidth() / 2);
+        const float alpha = mix().mute ? 0.35f : 1.0f;
+        for (int c = 0; c < columns; ++c)
         {
-            const float x = geo.stepX (playStep) + geo.stepW * 0.5f;
-            g.setColour (look::red);
-            g.fillRect (x - 0.5f, (float) kRulerHeight - 4.0f, 1.0f, geo.rowY (kNumTracks) - (float) kRulerHeight + 4.0f);
-            juce::Path marker;
-            marker.addTriangle (x - 4.0f, (float) kRulerHeight - 6.0f, x + 4.0f, (float) kRulerHeight - 6.0f, x, (float) kRulerHeight - 1.0f);
-            g.fillPath (marker);
+            const float v = juce::jlimit (0.0f, 1.0f, std::sqrt (proc.toolHistory (tool, c)) * 1.2f);
+            if (v < 0.02f)
+                continue;
+            const float x = box.getRight() - 2.0f * (float) (c + 1);
+            const float lineH = juce::jmax (1.0f, v * box.getHeight());
+            g.setColour ((v > 0.95f ? look::red : look::ink).withAlpha (alpha * (0.25f + 0.75f * v)));
+            g.fillRect (x, box.getCentreY() - lineH * 0.5f, 1.0f, lineH);
         }
+        g.setColour (look::faint);
+        g.drawRect (box.expanded (1.0f), 1.0f);
+        g.setFont (look::mono (9.0f));
+        float peak = 0.0f;
+        for (int c = 0; c < 8; ++c)
+            peak = juce::jmax (peak, proc.toolHistory (tool, c));
+        g.setColour (peak > 1.0f ? look::red : look::dim);
+        g.drawText (formatDb (peak), juce::Rectangle<float> (box.getX() - 70.0f, 4.0f, 62.0f, 12.0f), juce::Justification::topRight);
     }
 
-    void mouseDown (const juce::MouseEvent& e) override
+    void resized() override
     {
-        const auto geo = geometry();
-        const auto p = e.position;
-        const int row = geo.rowAt (p.y);
-        dragMode = DragMode::None;
-        if (row < 0)
-            return;
+        auto r = getLocalBounds().reduced (0, 6);
+        auto right = r.removeFromRight (440);
+        const int y = r.getCentreY() - 10;
+        auto row = juce::Rectangle<int> (right.getX(), y, right.getWidth(), 20);
+        level.setBounds (row.removeFromLeft (200));
+        row.removeFromLeft (10);
+        muteButton.setBounds (row.removeFromLeft (28));
+        row.removeFromLeft (4);
+        soloButton.setBounds (row.removeFromLeft (28));
+        row.removeFromLeft (14);
+        showButton.setBounds (row.removeFromLeft (70));
+        row.removeFromLeft (6);
+        removeButton.setBounds (row.removeFromLeft (84));
 
-        if (row == kNumTracks)
-        {
-            editor.selectTrack (-1);
-            return;
-        }
-
-        const int t = row;
-        const auto& tr = editor.processor().getUiState().tracks[(size_t) t];
-
-        if (p.x < geo.nameX)
-        {
-            const float rel = (p.y - geo.rowY (t)) / geo.rowH;
-            editor.selectTrack (t);
-            // pad hit: clicking higher in the box hits harder
-            editor.send (CommandType::Trigger, t, 0, juce::jlimit (0.3f, 1.0f, 1.15f - rel * 0.8f));
-            return;
-        }
-
-        if (p.x < geo.stepsX - 4.0f)
-        {
-            editor.selectTrack (t);
-            if (e.mods.isPopupMenu())
-                editor.showVoiceMenu (t);
-            return;
-        }
-
-        const int s = geo.stepAt (p.x);
-        if (s >= 0)
-        {
-            editor.selectTrack (t);
-            dragTrack = t;
-            dragStep = s;
-            dragStartVelocity = steps (tr)[(size_t) s];
-            if (dragStartVelocity > 0.0f)
-            {
-                dragMode = DragMode::PendingOff;
-            }
-            else
-            {
-                dragMode = DragMode::PaintOn;
-                editor.send (CommandType::SetStep, t, stepIndex (s), 1.0f);
-            }
-            return;
-        }
-
-        if (p.x >= geo.muteX && p.x < geo.muteX + geo.toggleW)
-            editor.send (CommandType::SetMute, t, 0, tr.mute ? 0.0f : 1.0f);
-        else if (p.x >= geo.soloX && p.x < geo.soloX + geo.toggleW)
-            editor.send (CommandType::SetSolo, t, 0, tr.solo ? 0.0f : 1.0f);
-        else
-            editor.selectTrack (t);
-    }
-
-    void mouseDrag (const juce::MouseEvent& e) override
-    {
-        const auto geo = geometry();
-
-        if (dragMode == DragMode::PendingOff && std::abs (e.getDistanceFromDragStartY()) > 3)
-            dragMode = DragMode::Velocity;
-
-        if (dragMode == DragMode::Velocity)
-        {
-            const float v = juce::jlimit (0.05f, 1.0f, dragStartVelocity - (float) e.getDistanceFromDragStartY() / 90.0f);
-            editor.send (CommandType::SetStep, dragTrack, stepIndex (dragStep), v);
-        }
-        else if (dragMode == DragMode::PaintOn)
-        {
-            const int s = geo.stepAt (e.position.x);
-            if (s >= 0 && steps (editor.processor().getUiState().tracks[(size_t) dragTrack])[(size_t) s] <= 0.0f)
-                editor.send (CommandType::SetStep, dragTrack, stepIndex (s), 1.0f);
-        }
-    }
-
-    void mouseUp (const juce::MouseEvent&) override
-    {
-        if (dragMode == DragMode::PendingOff)
-            editor.send (CommandType::SetStep, dragTrack, stepIndex (dragStep), 0.0f);
-        dragMode = DragMode::None;
-    }
-
-    void mouseDoubleClick (const juce::MouseEvent& e) override
-    {
-        const auto geo = geometry();
-        const int row = geo.rowAt (e.position.y);
-        if (row >= 0 && row < kNumTracks && e.position.x >= geo.nameX && e.position.x < geo.stepsX - 4.0f)
-            editor.showVoiceMenu (row);
+        addButton.setBounds (290, y, 220, 20);
     }
 
 private:
-    static constexpr int kRulerHeight = 18;
+    const ToolMix& mix() const { return editor.processor().getStudioState().tools[(size_t) tool]; }
 
-    // the pattern on screen and the command index for one of its steps
-    int viewed() const { return viewedPattern (editor.processor().getUiState()); }
-    const Pattern& steps (const TrackState& tr) const { return tr.patterns[(size_t) viewed()]; }
-    int stepIndex (int step) const { return viewed() * kNumSteps + step; }
-
-    struct Geometry
+    juce::Rectangle<int> barcodeArea() const
     {
-        float width = 0, rowH = 0, top = 0;
-        float nameX = 44, stepsX = 190, stepW = 40, barcodeX = 0, barcodeW = 0;
-        float muteX = 0, soloX = 0, toggleW = 26;
-
-        float rowY (int r) const { return top + rowH * (float) r; }
-        float stepX (int s) const { return stepsX + stepW * (float) s; }
-        int rowAt (float y) const
-        {
-            const int r = (int) std::floor ((y - top) / rowH);
-            return y >= top && r >= 0 && r <= kNumTracks ? r : -1;
-        }
-        int stepAt (float x) const
-        {
-            const int s = (int) std::floor ((x - stepsX) / stepW);
-            return x >= stepsX && s >= 0 && s < kNumSteps ? s : -1;
-        }
-    };
-
-    Geometry geometry() const
-    {
-        Geometry g;
-        g.width = (float) getWidth();
-        g.top = (float) kRulerHeight;
-        g.rowH = ((float) getHeight() - g.top) / (float) (kNumTracks + 1);
-        g.stepW = juce::jlimit (22.0f, 44.0f, (g.width - g.stepsX - 300.0f) / (float) kNumSteps);
-        g.soloX = g.width - g.toggleW;
-        g.muteX = g.soloX - g.toggleW - 6.0f;
-        g.barcodeX = g.stepX (kNumSteps) + 24.0f;
-        g.barcodeW = juce::jmin ((float) ModularSynthProcessor::kHistoryLength, g.muteX - 16.0f - g.barcodeX);
-        g.barcodeX = g.muteX - 16.0f - g.barcodeW;
-        return g;
+        return { 290, 10, juce::jmax (40, getWidth() - 290 - 460), getHeight() - 20 };
     }
 
-    void paintIndex (juce::Graphics& g, juce::Rectangle<float> box, const juce::String& text, float flashAmount, bool selected)
+    juce::String summary() const
     {
-        if (flashAmount > 0.02f)
+        const auto& proc = editor.processor();
+        if (toolKind (tool) == ToolKind::Drums)
         {
-            g.setColour (look::ink.withAlpha (flashAmount));
-            g.fillRect (box);
+            const auto& d = proc.getUiState();
+            int sounding = 0;
+            for (const auto& tr : d.tracks)
+                for (float v : tr.patterns[(size_t) d.pattern])
+                    if (v > 0.0f)
+                    {
+                        ++sounding;
+                        break;
+                    }
+            return "P" + juce::String (d.pattern + 1) + " // " + look::pad (sounding, 2) + " OF 08 TRACKS PLAYING";
         }
-        g.setColour (selected ? look::ink : look::dim);
-        g.drawRect (box, 1.0f);
-        g.setFont (look::mono (11.0f, true));
-        g.setColour (flashAmount > 0.5f ? look::background : look::ink);
-        g.drawText (text, box, juce::Justification::centred);
+        return {};
     }
-
-    // An active step drawn as a white tag holding its velocity as a MIDI-style
-    // number (127 = full). The step under the playhead turns into an outline.
-    static void paintStepTag (juce::Graphics& g, juce::Rectangle<float> cell, float velocity, bool now, float alpha)
-    {
-        const float fontH = juce::jlimit (8.0f, 11.5f, cell.getWidth() / 1.9f);
-        const auto tag = cell.withSizeKeepingCentre (cell.getWidth(), juce::jmin (cell.getHeight(), fontH + 7.0f));
-        const auto label = look::pad (juce::jlimit (1, 127, juce::roundToInt (velocity * 127.0f)), 3);
-
-        g.setColour (look::ink.withAlpha (alpha));
-        if (now)
-            g.drawRect (tag, 1.0f);
-        else
-            g.fillRect (tag);
-        g.setColour (now ? look::ink.withAlpha (alpha) : look::background);
-        g.setFont (look::mono (fontH, true));
-        g.drawText (label, tag, juce::Justification::centred, false);
-    }
-
-    void paintToggle (juce::Graphics& g, float x, float y, float w, const char* text, bool on, bool rowSelected)
-    {
-        const juce::Rectangle<float> box (x, y, w, 18.0f);
-        if (on)
-        {
-            g.setColour (look::ink);
-            g.fillRect (box);
-            g.setColour (look::background);
-        }
-        else
-        {
-            g.setColour (rowSelected ? look::dim : look::faint);
-            g.drawRect (box, 1.0f);
-            g.setColour (look::dim);
-        }
-        g.setFont (look::mono (10.0f, true));
-        g.drawText (text, box, juce::Justification::centred);
-    }
-
-    void paintTrack (juce::Graphics& g, const Geometry& geo, int t, const TrackState& tr, int pattern, int playStep)
-    {
-        auto& proc = editor.processor();
-        const float y0 = geo.rowY (t), h = geo.rowH, mid = y0 + h * 0.5f;
-        const bool selected = editor.selectedTrack() == t;
-        const float alpha = tr.mute ? 0.35f : 1.0f;
-
-        g.setColour (look::faint);
-        g.fillRect (0.0f, y0, geo.width, 1.0f);
-
-        paintIndex (g, { 4.0f, y0 + 6.0f, 30.0f, h - 12.0f }, look::pad (t + 1, 2), flash[(size_t) t], selected);
-
-        // name + summary line
-        if (selected)
-        {
-            g.setColour (look::ink);
-            g.fillRect (geo.nameX, y0 + 8.0f, 2.0f, h - 16.0f);
-        }
-        g.setFont (look::mono (13.0f, true));
-        g.setColour (look::ink.withAlpha (alpha * (selected ? 1.0f : 0.8f)));
-        g.drawText (proc.trackName (t), juce::Rectangle<float> (geo.nameX + 10.0f, y0 + 4.0f, geo.stepsX - geo.nameX - 14.0f, h * 0.5f - 2.0f),
-                    juce::Justification::bottomLeft, true);
-        g.setFont (look::mono (9.5f));
-        g.setColour (look::dim);
-        char first[32];
-        formatVoiceParam (tr.voice, tr.character, 0, tr.voiceParams[0], first, (int) sizeof (first));
-        juce::String sub = juce::String (characterName (tr.character)) + " / " + juce::String (first);
-        if (tr.voice == VoiceType::Sample && tr.sample == nullptr)
-            sub = "EMPTY / RIGHT-CLICK";
-        g.drawText (sub, juce::Rectangle<float> (geo.nameX + 10.0f, mid + 2.0f, geo.stepsX - geo.nameX - 14.0f, h * 0.5f - 6.0f),
-                    juce::Justification::topLeft, true);
-
-        // steps: a thin data line, active steps as white dashes (height = velocity)
-        const float stepsEnd = geo.stepX (kNumSteps);
-        g.setColour (look::faint.brighter (0.2f));
-        g.fillRect (geo.stepsX, mid, stepsEnd - geo.stepsX, 1.0f);
-        for (int s = 0; s < kNumSteps; ++s)
-        {
-            const float x = geo.stepX (s);
-            g.setColour (s % 4 == 0 ? look::dim : look::faint);
-            g.fillRect (x, y0 + h - 7.0f, 1.0f, 4.0f);
-
-            const float v = tr.patterns[(size_t) pattern][(size_t) s];
-            if (v > 0.0f)
-                paintStepTag (g, { x + 2.0f, y0 + 7.0f, geo.stepW - 4.0f, h - 16.0f }, v, s == playStep, alpha);
-        }
-
-        // signal panel: the track's harmonic lattice, see paintSignalBox
-        const auto bx = geo.barcodeX, bw = geo.barcodeW;
-        paintSignalBox (g, juce::Rectangle<float> (bx - 1.0f, y0 + 5.0f, bw + 2.0f, h - 10.0f), t, tr, alpha);
-        float lastPeak = 0.0f;
-        for (int c = 0; c < 8; ++c)
-            lastPeak = juce::jmax (lastPeak, proc.trackHistory (t, c));
-        g.setFont (look::mono (9.0f));
-        g.setColour (lastPeak > 1.0f ? look::red : look::dim);
-        g.drawText (formatDb (lastPeak), juce::Rectangle<float> (bx - 66.0f, y0 + 4.0f, 60.0f, 12.0f), juce::Justification::topRight);
-
-        paintToggle (g, geo.muteX, mid - 9.0f, geo.toggleW, "M", tr.mute, selected);
-        paintToggle (g, geo.soloX, mid - 9.0f, geo.toggleW, "S", tr.solo, selected);
-    }
-
-    // The track's tuned pitch in Hz, or 0 for unpitched voices (clicks,
-    // noise, samples, voices tuned in semitones).
-    static float fundamentalHz (const TrackState& tr)
-    {
-        if (tr.voice == VoiceType::Sample)
-            return 0.0f;
-        for (int i = 0; i < kNumVoiceParams; ++i)
-            if (voiceParamIsPitch (tr.voice, tr.character, i) && voiceParamSteps (tr.voice, tr.character, i) == 0)
-                return voiceParamValue (tr.voice, tr.character, i, tr.voiceParams[(size_t) i]);
-        return 0.0f;
-    }
-
-    // A white (or coloured) label with black text, like the word boxes in
-    // the Datamatics installation. Returns its width.
-    static float paintTag (juce::Graphics& g, const juce::String& text, float x, float y, juce::Colour fill)
-    {
-        const auto font = look::mono (8.0f, true);
-        const float w = juce::GlyphArrangement::getStringWidth (font, text) + 5.0f;
-        g.setColour (fill);
-        g.fillRect (x, y, w, 9.0f);
-        g.setColour (look::background);
-        g.setFont (font);
-        g.drawText (text, juce::Rectangle<float> (x, y, w, 9.0f), juce::Justification::centred, false);
-        return w;
-    }
-
-    // Signal panel: an annotated harmonic lattice. A log frequency ruler
-    // (20 Hz - 20 kHz, a tick at every C) with the live spectrum, the
-    // harmonic series of the drum's pitch as dotted lines that light up when
-    // the sound has energy there, and the numbers as tags on top: note, pitch
-    // and measured phase on the fundamental (with a phase portrait under it),
-    // the spectral centroid, and peak / RMS / crest factor. The current
-    // sample's 16 bits run along the top.
-    void paintSignalBox (juce::Graphics& g, juce::Rectangle<float> box, int t, const TrackState& tr, float alpha)
-    {
-        auto& proc = editor.processor();
-        const double sr = proc.getEngineSampleRate();
-        proc.copyTrackScope (t, scopeBuf.data(), kFftSize);
-
-        // levels over the newest 256 samples
-        float peak = 0.0f, sumSq = 0.0f;
-        for (int i = kFftSize - 256; i < kFftSize; ++i)
-        {
-            peak = juce::jmax (peak, std::abs (scopeBuf[(size_t) i]));
-            sumSq += scopeBuf[(size_t) i] * scopeBuf[(size_t) i];
-        }
-        const float rms = std::sqrt (sumSq / 256.0f);
-        const bool live = rms > 0.002f;
-
-        // spectrum
-        for (int i = 0; i < kFftSize; ++i)
-        {
-            fftRe[(size_t) i] = scopeBuf[(size_t) i] * fftWindow[(size_t) i];
-            fftIm[(size_t) i] = 0.0f;
-        }
-        fft (fftRe.data(), fftIm.data(), kFftSize);
-        float magSum = 0.0f, freqSum = 0.0f;
-        for (int b = 1; b < kFftSize / 2; ++b)
-        {
-            const float m = std::hypot (fftRe[(size_t) b], fftIm[(size_t) b]) / (float) (kFftSize / 4);
-            mags[(size_t) b] = m;
-            magSum += m;
-            freqSum += m * (float) b * (float) sr / (float) kFftSize;
-        }
-        const float centroid = magSum > 1.0e-4f ? freqSum / magSum : 0.0f;
-
-        const auto area = box.reduced (1.0f).withTrimmedTop (5.0f);
-        const float x0 = area.getX(), w = area.getWidth(), top = area.getY() + 1.0f, base = area.getBottom() - 8.0f;
-        const auto xOf = [&] (double hz) { return x0 + (float) (std::log (hz / 20.0) / std::log (1000.0)) * w; };
-        // spectrum level 0..1 (-72 dB .. 0 dB) for the pixels around a frequency
-        const auto levelAt = [&] (double hzLo, double hzHi) {
-            const int lo = juce::jlimit (1, kFftSize / 2 - 1, (int) std::floor (hzLo * kFftSize / sr));
-            const int hi = juce::jlimit (lo, kFftSize / 2 - 1, (int) std::ceil (hzHi * kFftSize / sr));
-            float m = 0.0f;
-            for (int b = lo; b <= hi; ++b)
-                m = juce::jmax (m, mags[(size_t) b]);
-            return juce::jlimit (0.0f, 1.0f, (20.0f * std::log10 (m + 1.0e-9f) + 72.0f) / 72.0f);
-        };
-        const auto hzAt = [&] (float x) { return 20.0 * std::pow (1000.0, (double) ((x - x0) / w)); };
-
-        // octave ruler
-        g.setFont (look::mono (7.0f));
-        for (int octave = 1; octave <= 9; ++octave)
-        {
-            const float x = xOf (16.352 * std::pow (2.0, octave));
-            g.setColour (look::faint);
-            g.fillRect (x, top, 1.0f, area.getBottom() - top);
-            g.setColour (look::dim);
-            g.drawText ("C" + juce::String (octave), juce::Rectangle<float> (x + 2.0f, base, 20.0f, 8.0f), juce::Justification::centredLeft, false);
-        }
-
-        // live spectrum
-        if (live)
-        {
-            for (float x = x0; x < x0 + w; x += 1.0f)
-            {
-                const float v = levelAt (hzAt (x), hzAt (x + 1.0f));
-                if (v < 0.15f)
-                    continue;
-                g.setColour (look::ink.withAlpha (alpha * (0.2f + v * 0.55f)));
-                const float barH = v * (base - top - 6.0f);
-                g.fillRect (x, base - barH, 1.0f, barH);
-            }
-        }
-
-        // harmonic series of the drum's pitch
-        const float f0 = fundamentalHz (tr);
-        if (f0 > 0.0f)
-        {
-            for (int n = 1; n <= 32 && f0 * (float) n < 20000.0f; ++n)
-            {
-                const double f = f0 * (double) n;
-                const float x = xOf (f);
-                const bool lit = live && levelAt (f * 0.985, f * 1.015) > 0.55f;
-                g.setColour (n == 1 ? look::red.withAlpha (alpha) : lit ? look::ink.withAlpha (alpha) : look::faint.brighter (0.25f));
-                for (float y = top; y < base; y += 2.0f)
-                    g.fillRect (x, y, 1.0f, 1.0f);
-            }
-        }
-
-        if (live && centroid > 20.0f)
-        {
-            g.setColour (look::blue);
-            g.fillRect (xOf (centroid), top, 1.0f, base - top);
-        }
-
-        // the current sample's 16 bits along the top
-        {
-            const int bits = juce::roundToInt (juce::jlimit (-1.0f, 1.0f, scopeBuf[(size_t) kFftSize - 1]) * 32767.0f) & 0xffff;
-            const float cellW = box.getWidth() / 16.0f;
-            for (int b = 0; b < 16; ++b)
-            {
-                const bool on = ((bits >> (15 - b)) & 1) != 0;
-                g.setColour (on ? (b == 0 ? look::red : look::ink.withAlpha (alpha)) : look::faint);
-                g.fillRect (box.getX() + (float) b * cellW, box.getY() + 3.0f, cellW - 1.0f, 2.0f);
-            }
-        }
-
-        // tags
-        if (f0 > 0.0f)
-        {
-            char pitchText[32];
-            for (int i = 0; i < kNumVoiceParams; ++i)
-                if (voiceParamIsPitch (tr.voice, tr.character, i))
-                {
-                    formatVoiceParam (tr.voice, tr.character, i, tr.voiceParams[(size_t) i], pitchText, (int) sizeof (pitchText));
-                    break;
-                }
-            // phase of the fundamental as measured in the spectrum
-            const int bin = juce::jlimit (1, kFftSize / 2 - 1, juce::roundToInt (f0 * kFftSize / sr));
-            const auto phase = juce::String (live ? juce::roundToInt ((std::atan2 (fftIm[(size_t) bin], fftRe[(size_t) bin]) + juce::MathConstants<float>::pi) * 180.0f / juce::MathConstants<float>::pi) : 0)
-                               + juce::String (juce::CharPointer_UTF8 ("\xc2\xb0"));
-            const auto text = juce::String (pitchText) + "  " + (live ? phase : juce::String ("--"));
-            const float fx = xOf (f0);
-            const float tagW = juce::GlyphArrangement::getStringWidth (look::mono (8.0f, true), text) + 5.0f;
-            const float tx = fx + 2.0f + tagW < area.getRight() - 50.0f ? fx + 2.0f : fx - 2.0f - tagW;
-            paintTag (g, text, tx, top + 1.0f, look::red.withAlpha (alpha));
-            paintPhasePortrait (g, { tx, top + 12.0f, 22.0f, 22.0f }, f0, sr);
-        }
-        if (live && centroid > 20.0f)
-            paintTag (g, "CENT " + juce::String (juce::roundToInt (centroid)) + " Hz", juce::jmin (area.getRight() - 112.0f, xOf (centroid) + 2.0f), top + 23.0f, look::blue);
-
-        const auto dbText = [] (float v) { return v < 1.0e-5f ? juce::String ("-INF") : juce::String (gainToDb (v), 1); };
-        const juce::String readouts[] = { "PK " + dbText (peak), "RMS " + dbText (rms), "CRST " + (rms > 1.0e-4f ? juce::String (peak / rms, 1) : juce::String ("--")) };
-        float ry = top + 1.0f;
-        for (int i = 0; i < 3; ++i)
-        {
-            const float tw = juce::GlyphArrangement::getStringWidth (look::mono (8.0f, true), readouts[i]) + 5.0f;
-            paintTag (g, readouts[i], area.getRight() - tw - 1.0f, ry, i == 0 && peak > 1.0f ? look::red : look::ink.withAlpha (alpha));
-            ry += 11.0f;
-        }
-
-        g.setColour (look::dim);
-        g.drawRect (box, 1.0f);
-        g.setColour (look::ink.withAlpha (alpha));
-        g.fillRect (box.getX(), box.getY(), box.getWidth(), 3.0f);
-    }
-
-    // Each sample plotted against the sample a quarter cycle earlier: a pure
-    // tone draws a ring, distortion squares it off, noise is a cloud.
-    void paintPhasePortrait (juce::Graphics& g, juce::Rectangle<float> r, float f0, double sr)
-    {
-        g.setColour (look::background);
-        g.fillRect (r);
-        g.setColour (look::faint.brighter (0.3f));
-        g.drawRect (r, 1.0f);
-        g.fillRect (r.getX(), r.getCentreY(), r.getWidth(), 1.0f);
-        g.fillRect (r.getCentreX(), r.getY(), 1.0f, r.getHeight());
-
-        const int tau = juce::jlimit (1, 1000, juce::roundToInt (sr / f0 / 4.0));
-        float maxAbs = 1.0e-4f;
-        for (int i = kFftSize - 1200; i < kFftSize; ++i)
-            maxAbs = juce::jmax (maxAbs, std::abs (scopeBuf[(size_t) i]));
-        const float scale = r.getWidth() * 0.45f / maxAbs;
-        g.setColour (look::ink);
-        for (int i = kFftSize - 400; i < kFftSize; ++i)
-        {
-            const float a = scopeBuf[(size_t) i], b = scopeBuf[(size_t) (i - tau)];
-            if (std::abs (a) + std::abs (b) < 0.003f)
-                continue;
-            g.fillRect (r.getCentreX() + a * scale, r.getCentreY() - b * scale, 1.0f, 1.0f);
-        }
-    }
-
-    void paintMaster (juce::Graphics& g, const Geometry& geo, const ProjectState& state)
-    {
-        auto& proc = editor.processor();
-        const float y0 = geo.rowY (kNumTracks), h = geo.rowH, mid = y0 + h * 0.5f;
-        const bool selected = editor.selectedTrack() < 0;
-
-        g.setColour (look::dim);
-        g.fillRect (0.0f, y0, geo.width, 1.0f);
-        paintIndex (g, { 4.0f, y0 + 6.0f, 30.0f, h - 12.0f }, "MS", 0.0f, selected);
-
-        if (selected)
-        {
-            g.setColour (look::ink);
-            g.fillRect (geo.nameX, y0 + 8.0f, 2.0f, h - 16.0f);
-        }
-        g.setFont (look::mono (13.0f, true));
-        g.setColour (look::ink);
-        g.drawText ("MASTER", juce::Rectangle<float> (geo.nameX + 10.0f, y0 + 4.0f, 120.0f, h * 0.5f - 2.0f), juce::Justification::bottomLeft);
-        g.setFont (look::mono (9.5f));
-        g.setColour (look::dim);
-        g.drawText ("SUM + RACK " + formatDb (levelToGain (state.masterLevel)),
-                    juce::Rectangle<float> (geo.nameX + 10.0f, mid + 2.0f, geo.stepsX - geo.nameX - 14.0f, h * 0.5f - 6.0f),
-                    juce::Justification::topLeft, true);
-
-        // effects summary as a raw data line
-        juce::String data;
-        for (int i : { fxCrushBits, fxDistDrive, fxDistMix, fxCutoff, fxDelayTime, fxDelayMix, fxGrainTime, fxGrainMix,
-                       fxReverbTime, fxReverbMix, fxPsyStages, fxPsyMix })
-        {
-            char buf[32];
-            formatFxParam (state.masterFx, i, buf, (int) sizeof (buf));
-            data << fxParamName (i) << " " << buf << "   ";
-        }
-        g.setFont (look::mono (9.5f));
-        g.setColour (look::dim);
-        g.drawFittedText (data, juce::Rectangle<float> (geo.stepsX, y0 + 6.0f, geo.stepX (kNumSteps) - geo.stepsX, h - 12.0f).toNearestInt(),
-                          juce::Justification::centredLeft, 3, 1.0f);
-
-        // master peak meter: horizontal bar, red past 0 dB
-        const float peak = proc.masterPeak();
-        masterHold = juce::jmax (peak, masterHold * 0.97f);
-        const float meterW = geo.barcodeW;
-        const float x0 = geo.barcodeX;
-        const float fill = juce::jlimit (0.0f, 1.0f, std::sqrt (peak) / std::sqrt (1.4f)) * meterW;
-        const float hold = juce::jlimit (0.0f, 1.0f, std::sqrt (masterHold) / std::sqrt (1.4f)) * meterW;
-        const float zeroDb = std::sqrt (1.0f) / std::sqrt (1.4f) * meterW;
-        g.setColour (look::faint);
-        g.fillRect (x0, mid, meterW, 1.0f);
-        g.setColour (peak > 1.0f ? look::red : look::ink);
-        g.fillRect (x0, mid - 5.0f, fill, 10.0f);
-        g.setColour (masterHold > 1.0f ? look::red : look::ink);
-        g.fillRect (x0 + hold, mid - 9.0f, 1.0f, 18.0f);
-        g.setColour (look::red.withAlpha (0.8f));
-        g.fillRect (x0 + zeroDb, mid - 12.0f, 1.0f, 24.0f);
-        g.setFont (look::mono (9.0f));
-        g.setColour (masterHold > 1.0f ? look::red : look::dim);
-        g.drawText ("PEAK " + formatDb (masterHold), juce::Rectangle<float> (x0, y0 + 4.0f, 160.0f, 12.0f), juce::Justification::topLeft);
-        g.setColour (look::dim);
-        g.drawText ("0 dB", juce::Rectangle<float> (x0 + zeroDb + 4.0f, y0 + h - 16.0f, 50.0f, 12.0f), juce::Justification::topLeft);
-    }
-
-    enum class DragMode
-    {
-        None,
-        PaintOn,
-        PendingOff,
-        Velocity
-    };
 
     ModularSynthEditor& editor;
-    std::array<int, kNumTracks> lastHits {};
-    std::array<float, kNumTracks> flash {};
-    // signal panel analysis, reused every paint
-    static constexpr int kFftSize = 2048;
-    std::array<float, kFftSize> scopeBuf {}, fftRe {}, fftIm {}, fftWindow = makeHannWindow<(size_t) kFftSize>();
-    std::array<float, kFftSize / 2> mags {};
-    float masterHold = 0.0f;
-    DragMode dragMode = DragMode::None;
-    int dragTrack = 0, dragStep = 0;
-    float dragStartVelocity = 0.0f;
+    const int tool;
+    DataButton addButton { "+ ADD" }, showButton { "OPEN" }, removeButton { "REMOVE" }, muteButton { "M" }, soloButton { "S" };
+    DataSlider level;
+    int shownActive = -1; // nothing shown yet
 };
 
 // =============================================================================
-// Parameter panel for the selected track (or the master).
+// The studio master: every tool's sum through one more effects rack.
 
-class ParamPanel : public juce::Component
+class MasterPanel : public juce::Component
 {
 public:
-    explicit ParamPanel (ModularSynthEditor& e) : editor (e)
+    explicit MasterPanel (ModularSynthEditor& e) : editor (e)
     {
-        addAndMakeVisible (typeButton);
-        typeButton.onClick = [this] {
-            if (editor.selectedTrack() >= 0)
-                editor.showVoiceMenu (editor.selectedTrack());
-        };
-
-        addAndMakeVisible (copyButton);
-        addAndMakeVisible (copyPatternButton);
-        addAndMakeVisible (pasteButton);
-        addAndMakeVisible (randomButton);
-        copyButton.onClick = [this] { editor.copySequence (false); };
-        copyPatternButton.onClick = [this] { editor.copySequence (true); };
-        pasteButton.onClick = [this] { editor.pasteSequence(); };
-        randomButton.onClick = [this] { editor.randomizeSequence (editor.selectedTrack()); };
-
-        for (int c = 0; c < kNumCharacters; ++c)
-        {
-            auto& b = characterButtons[(size_t) c];
-            b.setText (characterName ((Character) c));
-            addAndMakeVisible (b);
-            b.onClick = [this, c] {
-                if (editor.selectedTrack() >= 0)
-                    editor.send (CommandType::SetCharacter, editor.selectedTrack(), c, 0.0f);
-            };
-        }
-
-        for (int i = 0; i < kNumVoiceParams; ++i)
-        {
-            auto& s = voice[(size_t) i];
-            addAndMakeVisible (s);
-            s.onChange = [this, i] (float v) { editor.send (CommandType::SetVoiceParam, editor.selectedTrack(), i, v); };
-        }
-
         addAndMakeVisible (level);
         level.setLabel ("LEVEL");
-        level.setDefault (0.7071f);
+        level.setDefault (StudioState().masterLevel);
         level.format = [] (float v) { return formatDb (levelToGain (v)); };
-        level.onChange = [this] (float v) {
-            if (editor.selectedTrack() < 0)
-                editor.send (CommandType::SetMasterLevel, 0, 0, v);
-            else
-                editor.send (CommandType::SetLevel, editor.selectedTrack(), 0, v);
-        };
+        level.onChange = [this] (float v) { editor.send (CommandType::SetMasterLevel, kStudio, 0, 0, v); };
 
-        addAndMakeVisible (pan);
-        pan.setLabel ("PAN");
-        pan.setDefault (0.5f);
-        pan.setBipolar (true);
-        pan.format = [] (float v) { return formatPan (v); };
-        pan.onChange = [this] (float v) { editor.send (CommandType::SetPan, editor.selectedTrack(), 0, v); };
-
-        const auto defaults = defaultFxParams();
-        for (int i = 0; i < kNumFxParams; ++i)
-        {
-            auto& s = fx[(size_t) i];
-            addAndMakeVisible (s);
-            s.setLabel (fxParamName (i));
-            s.setDefault (defaults[(size_t) i]);
-            s.setSteps (fxParamSteps (i));
-            if (fxParamIsToggle (i))
-                s.setToggle ("MS", "NOTE");
-            s.format = [this, i] (float v) {
-                // time readouts depend on their sync switch, so format the whole set
-                auto params = shownFx();
-                params[(size_t) i] = v;
-                char buf[32];
-                formatFxParam (params, i, buf, (int) sizeof (buf));
-                return juce::String (buf);
-            };
-            s.onChange = [this, i] (float v) { editor.send (CommandType::SetFxParam, editor.selectedTrack(), i, v); };
-        }
+        fx.attach (*this, [this] { return editor.processor().getStudioState().masterFx; },
+                   [this] (int i, float v) { editor.send (CommandType::SetFxParam, kStudio, 0, i, v); });
     }
 
     void refresh()
     {
-        const int t = editor.selectedTrack();
-        const auto& state = editor.processor().getUiState();
-        const bool master = t < 0;
-        const auto voiceType = master ? VoiceType::Count : state.tracks[(size_t) t].voice;
-        const auto character = master ? Character::Count : state.tracks[(size_t) t].character;
-
-        if (t != shownTrack || voiceType != shownVoice || character != shownCharacter)
-        {
-            shownTrack = t;
-            shownVoice = voiceType;
-            shownCharacter = character;
-            typeButton.setVisible (! master);
-            randomButton.setVisible (! master);
-            copyButton.setVisible (! master);
-            resized();
-            for (int c = 0; c < kNumCharacters; ++c)
-            {
-                characterButtons[(size_t) c].setVisible (! master);
-                characterButtons[(size_t) c].setOn (character == (Character) c);
-            }
-            pan.setVisible (! master);
-            level.setDefault (master ? ProjectState().masterLevel : TrackState().level);
-
-            const auto defaults = master ? VoiceParams {} : defaultVoiceParams (voiceType, character);
-            for (int i = 0; i < kNumVoiceParams; ++i)
-            {
-                auto& s = voice[(size_t) i];
-                const char* name = master ? nullptr : voiceParamName (voiceType, character, i);
-                s.setVisible (name != nullptr);
-                if (name == nullptr)
-                    continue;
-                s.setLabel (name);
-                s.setDefault (defaults[(size_t) i]);
-                s.setSteps (voiceParamSteps (voiceType, character, i));
-                s.snap = nullptr;
-                if (voiceParamIsPitch (voiceType, character, i))
-                    s.snap = [voiceType, character, i] (float v) { return snapVoiceParamToNote (voiceType, character, i, v); };
-                s.format = [voiceType, character, i] (float v) {
-                    char buf[32];
-                    formatVoiceParam (voiceType, character, i, v, buf, (int) sizeof (buf));
-                    return juce::String (buf);
-                };
-                s.repaint();
-            }
-            if (! master)
-                typeButton.setText ("TYPE: " + juce::String (drumName (voiceType, character)));
-            repaint();
-        }
-
-        if (master)
-        {
-            level.setValue (state.masterLevel);
-            for (int i = 0; i < kNumFxParams; ++i)
-                fx[(size_t) i].setValue (state.masterFx[(size_t) i]);
-            return;
-        }
-
-        const auto& tr = state.tracks[(size_t) t];
-        for (int i = 0; i < kNumVoiceParams; ++i)
-            voice[(size_t) i].setValue (tr.voiceParams[(size_t) i]);
-        level.setValue (tr.level);
-        pan.setValue (tr.pan);
-        for (int i = 0; i < kNumFxParams; ++i)
-            fx[(size_t) i].setValue (tr.fx[(size_t) i]);
+        const auto& s = editor.processor().getStudioState();
+        level.setValue (s.masterLevel);
+        fx.setValues (s.masterFx);
+        repaint (meterArea());
     }
 
     void paint (juce::Graphics& g) override
     {
         g.setColour (look::dim);
         g.fillRect (0, 0, getWidth(), 1);
-
-        const int t = editor.selectedTrack();
-        const auto title = t < 0 ? juce::String ("MS MASTER // MIX BUS + EFFECTS RACK")
-                                 : look::pad (t + 1, 2) + " " + editor.processor().trackName (t) + " // PARAMETERS";
         g.setFont (look::mono (11.0f, true));
         g.setColour (look::ink);
-        g.drawText (title, 0, 6, getWidth() / 2, 18, juce::Justification::centredLeft);
+        g.drawText ("MS MASTER // EVERY TOOL + EFFECTS RACK", 0, 6, getWidth() / 2, 18, juce::Justification::centredLeft);
 
         g.setFont (look::mono (9.5f));
         g.setColour (look::dim);
-        const char* groups[] = { "VOICE + MIX", "CRUSH > DISTORT > FILTER", "DELAY > REVERB", "GRAIN DELAY", "PSYCHOSIS // OTT x 6" };
         for (int c = 0; c < kColumns; ++c)
-            g.drawText (groups[c], columnX (c), 30, columnX (1) - 24, 14, juce::Justification::centredLeft);
-        g.drawFittedText ("DRAG / SHIFT FINE / ALT OFF-NOTE / DOUBLE-CLICK RESET",
-                          juce::Rectangle<int> (columnX (0), 48 + 6 * 20 + 18, columnX (1) - 24, 28), juce::Justification::topLeft, 2);
+            g.drawText (c == 0 ? "LEVEL + PEAK" : FxRackControls::groupName (c - 1), columnX (c), 30, columnX (1) - 24, 14,
+                        juce::Justification::centredLeft);
+
+        const auto m = meterArea().toFloat();
+        paintPeakMeter (g, m.getX(), m.getCentreY(), m.getWidth(), editor.processor().masterPeak(), hold);
+        g.setColour (look::dim);
+        g.drawFittedText ("THE STUDIO MASTER COMES AFTER EACH TOOL'S OWN BUS. STEMS INCLUDE THEIR SHARE OF IT.",
+                          juce::Rectangle<int> (columnX (0), m.toNearestInt().getBottom() + 18, columnX (1) - 24, 40),
+                          juce::Justification::topLeft, 3);
     }
 
     void resized() override
     {
         const int rowH = 20, y0 = 48;
         const int colW = columnX (1) - columnX (0) - 24;
-
-        auto top = juce::Rectangle<int> (columnX (1), 4, getWidth() - columnX (1), 20);
-        typeButton.setBounds (top.removeFromLeft (150));
-        top.removeFromLeft (12);
-        for (auto& b : characterButtons)
-        {
-            b.setBounds (top.removeFromLeft (70));
-            top.removeFromLeft (4);
-        }
-        // sequence tools: right after the characters on a track; where the
-        // track buttons would be on the master
-        if (editor.selectedTrack() < 0)
-            top = juce::Rectangle<int> (columnX (1), 4, getWidth() - columnX (1), 20);
-        else
-            top.removeFromLeft (20);
-        if (editor.selectedTrack() >= 0)
-        {
-            copyButton.setBounds (top.removeFromLeft (92));
-            top.removeFromLeft (4);
-        }
-        copyPatternButton.setBounds (top.removeFromLeft (112));
-        top.removeFromLeft (4);
-        pasteButton.setBounds (top.removeFromLeft (64));
-        top.removeFromLeft (4);
-        randomButton.setBounds (top.removeFromLeft (76));
-
-        for (int i = 0; i < kNumVoiceParams; ++i)
-            voice[(size_t) i].setBounds (columnX (0), y0 + i * rowH, colW, rowH);
-        level.setBounds (columnX (0), y0 + 4 * rowH + 8, colW, rowH);
-        pan.setBounds (columnX (0), y0 + 5 * rowH + 8, colW, rowH);
-
-        auto column = [&] (int c, std::initializer_list<int> params) {
-            int y = y0;
-            for (int p : params)
-            {
-                if (p < 0) // a small gap between effects
-                {
-                    y += 6;
-                    continue;
-                }
-                fx[(size_t) p].setBounds (columnX (c), y, colW, rowH);
-                y += rowH;
-            }
-        };
-        column (1, { fxCrushBits, fxCrushRate, -1, fxDistDrive, fxDistType, fxDistTone, fxDistMix, -1, fxCutoff, fxResonance });
-        column (2, { fxDelayTime, fxDelaySync, fxDelayFeedback, fxDelayMix, -1, fxReverbTime, fxReverbSync, fxReverbDamp, fxReverbMix });
-        column (3, { fxGrainTime, fxGrainSize, fxGrainSync, fxGrainPitch, fxGrainSpray, fxGrainFeedback, fxGrainMix });
-        column (4, { fxPsyDepth, fxPsyStages, fxPsyTime, fxPsySync, fxPsyMix });
+        level.setBounds (columnX (0), y0, colW, rowH);
+        fx.layout ([this] (int c) { return columnX (c + 1); }, y0, rowH, colW);
     }
 
 private:
     static constexpr int kColumns = 5;
     int columnX (int c) const { return c * (getWidth() + 24) / kColumns; }
-
-    FxParams shownFx() const
-    {
-        const auto& state = editor.processor().getUiState();
-        const int t = editor.selectedTrack();
-        return t < 0 ? state.masterFx : state.tracks[(size_t) t].fx;
-    }
+    juce::Rectangle<int> meterArea() const { return { columnX (0), 96, columnX (1) - columnX (0) - 24, 44 }; }
 
     ModularSynthEditor& editor;
-    DataButton typeButton { "TYPE" };
-    DataButton copyButton { "COPY DRUM" }, copyPatternButton { "COPY PATTERN" }, pasteButton { "PASTE" }, randomButton { "RANDOM" };
-    std::array<DataButton, kNumCharacters> characterButtons { DataButton { "LIVE" }, DataButton { "DIGITAL" }, DataButton { "HR-16" } };
-    std::array<DataSlider, kNumVoiceParams> voice;
-    DataSlider level, pan;
-    std::array<DataSlider, kNumFxParams> fx;
-    int shownTrack = -2;
-    VoiceType shownVoice = VoiceType::Count;
-    Character shownCharacter = Character::Count;
+    DataSlider level;
+    FxRackControls fx;
+    float hold = 0.0f;
 };
 
 // =============================================================================
@@ -1008,27 +323,16 @@ ModularSynthEditor::ModularSynthEditor (ModularSynthProcessor& p) : AudioProcess
     juce::LookAndFeel::setDefaultLookAndFeel (&sharedLookAndFeel());
     setLookAndFeel (&sharedLookAndFeel());
 
-    grid = std::make_unique<TrackGrid> (*this);
-    panel = std::make_unique<ParamPanel> (*this);
-    addAndMakeVisible (*grid);
-    addAndMakeVisible (*panel);
-
-    for (auto* b : { &playButton, &stopButton, &recButton, &exportButton, &saveButton, &openButton, &clearButton, &resetButton })
-        addAndMakeVisible (*b);
-    clearButton.onClick = [this] { clearPattern(); };
-    resetButton.onClick = [this] { resetToDefaults(); };
-    for (int i = 0; i < kNumPatterns; ++i)
+    for (int t = 0; t < kNumToolSlots; ++t)
     {
-        auto& b = patternButtons[(size_t) i];
-        b.setText ("P" + juce::String (i + 1));
-        addAndMakeVisible (b);
-        b.onClick = [this, i] {
-            if (juce::ModifierKeys::getCurrentModifiers().isShiftDown())
-                copyPatternTo (i);
-            else
-                selectPattern (i);
-        };
+        strips[(size_t) t] = std::make_unique<ToolStrip> (*this, t);
+        addAndMakeVisible (*strips[(size_t) t]);
     }
+    master = std::make_unique<MasterPanel> (*this);
+    addAndMakeVisible (*master);
+
+    for (auto* b : { &playButton, &stopButton, &recButton, &exportButton, &saveButton, &openButton })
+        addAndMakeVisible (*b);
     recButton.setAccent (look::red);
 
     playButton.onClick = [this] { togglePlay(); };
@@ -1043,17 +347,17 @@ ModularSynthEditor::ModularSynthEditor (ModularSynthProcessor& p) : AudioProcess
 
     bpmReadout.setLabel ("BPM / DRAG");
     bpmReadout.onDrag = [this] (float px, bool fine) {
-        send (CommandType::SetBpm, 0, 0, proc.getUiState().bpm + px * (fine ? 0.1f : 0.5f));
+        send (CommandType::SetBpm, kStudio, 0, 0, proc.getStudioState().bpm + px * (fine ? 0.1f : 0.5f));
     };
-    bpmReadout.onDoubleClick = [this] { send (CommandType::SetBpm, 0, 0, 132.0f); };
+    bpmReadout.onDoubleClick = [this] { send (CommandType::SetBpm, kStudio, 0, 0, 132.0f); };
 
     swingReadout.setLabel ("SWING / DRAG");
     swingReadout.onDrag = [this] (float px, bool fine) {
-        send (CommandType::SetSwing, 0, 0, proc.getUiState().swing + px * (fine ? 0.002f : 0.01f));
+        send (CommandType::SetSwing, kStudio, 0, 0, proc.getStudioState().swing + px * (fine ? 0.002f : 0.01f));
     };
-    swingReadout.onDoubleClick = [this] { send (CommandType::SetSwing, 0, 0, 0.0f); };
+    swingReadout.onDoubleClick = [this] { send (CommandType::SetSwing, kStudio, 0, 0, 0.0f); };
 
-    stepReadout.setLabel ("PATTERN / STEP");
+    stepReadout.setLabel ("BEAT / STEP");
     posReadout.setLabel ("POSITION");
     rateReadout.setLabel ("SAMPLE RATE");
     takeReadout.setLabel ("TAKE");
@@ -1062,9 +366,8 @@ ModularSynthEditor::ModularSynthEditor (ModularSynthProcessor& p) : AudioProcess
 
     setWantsKeyboardFocus (true);
     setResizable (true, true);
-    setResizeLimits (1100, 720, 2600, 1700);
-    setSize (1320, 880);
-    panel->refresh();
+    setResizeLimits (1000, 560, 2600, 1700);
+    setSize (1240, 600);
     startTimerHz (60);
 }
 
@@ -1073,29 +376,21 @@ ModularSynthEditor::~ModularSynthEditor()
     stopTimer();
     if (exportThread != nullptr)
         exportThread->stopThread (15000);
+    for (auto& w : windows)
+        w.reset();
     setLookAndFeel (nullptr);
     juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
 }
 
-void ModularSynthEditor::send (CommandType type, int track, int index, float value, const SampleData* sample)
+void ModularSynthEditor::send (CommandType type, int tool, int track, int index, float value)
 {
     Command c;
     c.type = type;
+    c.tool = tool;
     c.track = track;
     c.index = index;
     c.value = value;
-    c.sample = sample;
     proc.send (c);
-}
-
-void ModularSynthEditor::selectTrack (int track)
-{
-    if (selected != track)
-    {
-        selected = track;
-        panel->refresh();
-        panel->repaint();
-    }
 }
 
 void ModularSynthEditor::setStatus (const juce::String& s)
@@ -1105,365 +400,162 @@ void ModularSynthEditor::setStatus (const juce::String& s)
     repaint (0, getHeight() - kStatusHeight, getWidth(), kStatusHeight);
 }
 
-void ModularSynthEditor::hitPad (int track, float velocity)
+// ---- tool windows -------------------------------------------------------------
+
+bool ModularSynthEditor::isToolWindowShowing (int tool) const
 {
-    send (CommandType::Trigger, track, 0, velocity);
+    const auto& w = windows[(size_t) tool];
+    return w != nullptr && w->isVisible();
 }
 
-void ModularSynthEditor::showVoiceMenu (int track)
+juce::Rectangle<int> ModularSynthEditor::defaultToolBounds (int tool) const
 {
-    juce::PopupMenu m;
-    m.addSectionHeader (look::pad (track + 1, 2) + " VOICE");
-    const auto& tr = proc.getUiState().tracks[(size_t) track];
-    for (int v = 0; v < kNumVoiceTypes; ++v)
-        if ((VoiceType) v != VoiceType::Sample)
-            m.addItem (1 + v, drumName ((VoiceType) v, tr.character), true, tr.voice == (VoiceType) v);
-    if (tr.voice != VoiceType::Sample)
-    {
-        m.addSectionHeader ("CHARACTER");
-        for (int c = 0; c < kNumCharacters; ++c)
-            m.addItem (200 + c, characterName ((Character) c), true, tr.character == (Character) c);
-    }
-    m.addSectionHeader ("SEQUENCE");
-    m.addItem (300, "COPY THIS DRUM  (CTRL+C)");
-    m.addItem (303, "COPY WHOLE PATTERN  (CTRL+SHIFT+C)");
-    m.addItem (301, "PASTE  (CTRL+V)", clipboard.has_value());
-    m.addItem (302, "RANDOM  (CTRL+R)");
-    m.addSeparator();
-    m.addItem (100, "LOAD SAMPLE...");
+    // a little below and to the right of the studio window, on its screen
+    const auto studio = getTopLevelComponent() != nullptr ? getTopLevelComponent()->getScreenBounds() : getScreenBounds();
+    juce::Rectangle<int> r (studio.getX() + 48 + 32 * tool, studio.getY() + 72 + 32 * tool, 1320, 820);
+    if (const auto* display = juce::Desktop::getInstance().getDisplays().getDisplayForRect (studio))
+        r = r.constrainedWithin (display->userArea);
+    return r;
+}
 
-    m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(), [this, track] (int r) {
-        if (r >= 300)
-            selectTrack (track);
-        if (r == 300)
-            copySequence (false);
-        else if (r == 303)
-            copySequence (true);
-        else if (r == 301)
-            pasteSequence();
-        else if (r == 302)
-            randomizeSequence (track);
-        else if (r == 100)
-            loadSampleInto (track);
-        else if (r >= 200)
-            send (CommandType::SetCharacter, track, r - 200, 0.0f);
-        else if (r > 0)
-            send (CommandType::SetVoiceType, track, r - 1, 0.0f);
-        panel->refresh();
+void ModularSynthEditor::createToolWindow (int tool, juce::Rectangle<int> bounds)
+{
+    auto view = std::make_unique<DrumMachineView> (proc);
+    auto* raw = view.get();
+    view->onUnhandledKey = [this] (const juce::KeyPress& key) { return handleStudioKey (key); };
+
+    auto window = std::make_unique<ToolWindow> ("MODULAR-SYNTH // " + juce::String (look::pad (tool + 1, 2)) + " " + toolTitle (tool), std::move (view));
+    window->setResizeLimits (1100, 720, 2600, 1700);
+    window->setBounds (bounds);
+    window->onTick = [raw] { raw->tick(); };
+    window->onLayoutChange = [this] { storeWindowLayout(); };
+    windows[(size_t) tool] = std::move (window);
+}
+
+void ModularSynthEditor::showToolWindow (int tool, bool show)
+{
+    if (! validTool (tool) || ! proc.getStudioState().tools[(size_t) tool].active)
+        return;
+    auto& w = windows[(size_t) tool];
+    if (w == nullptr)
+        createToolWindow (tool, defaultToolBounds (tool));
+    w->setVisible (show);
+    if (show)
+    {
+        w->toFront (true);
+        if (auto* content = w->getContentComponent())
+            content->grabKeyboardFocus();
+    }
+    storeWindowLayout();
+}
+
+void ModularSynthEditor::addTool (int tool)
+{
+    send (CommandType::AddTool, tool, 0, 0, 0.0f);
+    windows[(size_t) tool].reset();
+    showToolWindow (tool, true);
+    setStatus ("ADDED THE " + juce::String (toolTitle (tool)) + " // A FRESH ONE, ON THE STUDIO CLOCK");
+}
+
+void ModularSynthEditor::removeTool (int tool)
+{
+    const juce::String name = toolTitle (tool);
+    auto options = juce::MessageBoxOptions()
+                       .withIconType (juce::MessageBoxIconType::WarningIcon)
+                       .withTitle ("REMOVE THE " + name + "?")
+                       .withMessage ("Its patterns, sounds and effects leave the project. Save first if you want to keep them.")
+                       .withButton ("REMOVE")
+                       .withButton ("CANCEL")
+                       .withAssociatedComponent (this);
+    juce::Component::SafePointer<ModularSynthEditor> safe (this);
+    juce::AlertWindow::showAsync (options, [safe, tool, name] (int result) {
+        if (safe == nullptr || result != 1)
+            return;
+        safe->send (CommandType::RemoveTool, tool, 0, 0, 0.0f);
+        safe->windows[(size_t) tool].reset();
+        safe->storeWindowLayout();
+        safe->setStatus ("REMOVED THE " + name + " // ADD IT AGAIN FROM ITS ROW");
     });
 }
 
-void ModularSynthEditor::loadSampleInto (int track)
+void ModularSynthEditor::storeWindowLayout()
 {
-    chooser = std::make_unique<juce::FileChooser> ("Load a sample into track " + juce::String (track + 1), lastFolder,
-                                                   "*.wav;*.aif;*.aiff;*.flac");
-    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-                          [this, track] (const juce::FileChooser& fc) {
-                              const auto file = fc.getResult();
-                              if (file == juce::File())
-                                  return;
-                              juce::String error;
-                              const auto* sample = proc.loadSample (file, error);
-                              if (sample == nullptr)
-                              {
-                                  setStatus (error.toUpperCase());
-                                  return;
-                              }
-                              send (CommandType::SetVoiceType, track, (int) VoiceType::Sample, 0.0f);
-                              send (CommandType::SetSample, track, 0, 0.0f, sample);
-                              selectTrack (track);
-                              panel->refresh();
-                              setStatus ("LOADED " + file.getFileName().toUpperCase() + " INTO TRACK " + look::pad (track + 1, 2));
-                          });
+    auto layout = std::make_unique<juce::DynamicObject>();
+    for (int t = 0; t < kNumToolSlots; ++t)
+    {
+        const auto& w = windows[(size_t) t];
+        if (w == nullptr)
+            continue;
+        auto o = std::make_unique<juce::DynamicObject>();
+        const auto b = w->getBounds();
+        o->setProperty ("open", w->isVisible());
+        o->setProperty ("x", b.getX());
+        o->setProperty ("y", b.getY());
+        o->setProperty ("w", b.getWidth());
+        o->setProperty ("h", b.getHeight());
+        layout->setProperty (toolName (t), juce::var (o.release()));
+    }
+    proc.setWindowLayout (juce::var (layout.release()));
 }
 
-void ModularSynthEditor::selectPattern (int pattern)
+void ModularSynthEditor::applyWindowLayout()
 {
-    // While playing, the new pattern waits for the current one to finish.
-    const bool queue = proc.isPlaying();
-    send (CommandType::SelectPattern, 0, pattern, queue ? 1.0f : 0.0f);
-    const auto& state = proc.getUiState();
-    if (queue && state.queuedPattern >= 0)
-        setStatus ("P" + juce::String (pattern + 1) + " QUEUED / STARTS WHEN P" + juce::String (state.pattern + 1) + " ENDS");
-}
+    appliedLayoutVersion = proc.getWindowLayoutVersion();
+    const auto layout = proc.getWindowLayout();
+    const auto& displays = juce::Desktop::getInstance().getDisplays();
 
-void ModularSynthEditor::copyPatternTo (int pattern)
-{
-    const auto& state = proc.getUiState();
-    const int from = viewedPattern (state);
-    if (from == pattern)
-        return;
-    for (int t = 0; t < kNumTracks; ++t)
+    for (int t = 0; t < kNumToolSlots; ++t)
     {
-        const auto source = state.tracks[(size_t) t].patterns[(size_t) from];
-        for (int s = 0; s < kNumSteps; ++s)
-            send (CommandType::SetStep, t, pattern * kNumSteps + s, source[(size_t) s]);
-    }
-    setStatus ("COPIED P" + juce::String (from + 1) + " TO P" + juce::String (pattern + 1));
-}
-
-ModularSynthEditor::UndoSnapshot ModularSynthEditor::takeSnapshot (int pattern, bool withFx) const
-{
-    const auto& state = proc.getUiState();
-    UndoSnapshot snap;
-    snap.pattern = pattern;
-    snap.hasFx = withFx;
-    snap.masterFx = state.masterFx;
-    for (int t = 0; t < kNumTracks; ++t)
-    {
-        snap.steps[(size_t) t] = state.tracks[(size_t) t].patterns[(size_t) pattern];
-        snap.fx[(size_t) t] = state.tracks[(size_t) t].fx;
-    }
-    return snap;
-}
-
-void ModularSynthEditor::clearPattern()
-{
-    // Empties the pattern on screen and puts every effects rack (the 8 tracks
-    // and the master) back to its defaults.
-    const auto& state = proc.getUiState();
-    const int pattern = viewedPattern (state);
-    const auto defaults = defaultFxParams();
-    const auto before = takeSnapshot (pattern, true);
-
-    bool changed = before.masterFx != defaults;
-    for (int t = 0; t < kNumTracks; ++t)
-    {
-        changed = changed || before.fx[(size_t) t] != defaults;
-        for (float v : before.steps[(size_t) t])
-            changed = changed || v > 0.0f;
-    }
-    if (! changed)
-        return;
-
-    for (int t = 0; t < kNumTracks; ++t)
-    {
-        for (int s = 0; s < kNumSteps; ++s)
-            if (before.steps[(size_t) t][(size_t) s] > 0.0f)
-                send (CommandType::SetStep, t, pattern * kNumSteps + s, 0.0f);
-        for (int i = 0; i < kNumFxParams; ++i)
-            if (! juce::exactlyEqual (before.fx[(size_t) t][(size_t) i], defaults[(size_t) i]))
-                send (CommandType::SetFxParam, t, i, defaults[(size_t) i]);
-    }
-    for (int i = 0; i < kNumFxParams; ++i)
-        if (! juce::exactlyEqual (before.masterFx[(size_t) i], defaults[(size_t) i]))
-            send (CommandType::SetFxParam, -1, i, defaults[(size_t) i]);
-
-    lastUndo = before;
-    setStatus ("CLEARED P" + juce::String (pattern + 1) + " + RESET ALL EFFECTS / CTRL+Z TO BRING IT BACK");
-}
-
-void ModularSynthEditor::applySettings (const ProjectState& target)
-{
-    // Only sends what differs. The voice and character go first because
-    // changing them resets that drum's voice controls.
-    const auto& state = proc.getUiState();
-    auto set = [this] (CommandType type, int track, int index, float now, float want) {
-        if (! juce::exactlyEqual (now, want))
-            send (type, track, index, want);
-    };
-    for (int t = 0; t < kNumTracks; ++t)
-    {
-        const auto& want = target.tracks[(size_t) t];
-        const auto& now = state.tracks[(size_t) t];
-        if (now.voice != want.voice)
-            send (CommandType::SetVoiceType, t, (int) want.voice, 0.0f);
-        if (now.character != want.character)
-            send (CommandType::SetCharacter, t, (int) want.character, 0.0f);
-        for (int i = 0; i < kNumVoiceParams; ++i)
-            set (CommandType::SetVoiceParam, t, i, now.voiceParams[(size_t) i], want.voiceParams[(size_t) i]);
-        set (CommandType::SetLevel, t, 0, now.level, want.level);
-        set (CommandType::SetPan, t, 0, now.pan, want.pan);
-        set (CommandType::SetMute, t, 0, now.mute ? 1.0f : 0.0f, want.mute ? 1.0f : 0.0f);
-        set (CommandType::SetSolo, t, 0, now.solo ? 1.0f : 0.0f, want.solo ? 1.0f : 0.0f);
-        for (int i = 0; i < kNumFxParams; ++i)
-            set (CommandType::SetFxParam, t, i, now.fx[(size_t) i], want.fx[(size_t) i]);
-    }
-    for (int i = 0; i < kNumFxParams; ++i)
-        set (CommandType::SetFxParam, -1, i, state.masterFx[(size_t) i], target.masterFx[(size_t) i]);
-    set (CommandType::SetMasterLevel, 0, 0, state.masterLevel, target.masterLevel);
-    set (CommandType::SetBpm, 0, 0, state.bpm, target.bpm);
-    set (CommandType::SetSwing, 0, 0, state.swing, target.swing);
-}
-
-void ModularSynthEditor::resetToDefaults()
-{
-    // Puts every drum (voice, character, controls, level, pan, mute, solo),
-    // every effects rack, the master and the tempo/swing back to how the app
-    // starts. The sequences and any loaded samples stay as they are.
-    const auto& state = proc.getUiState();
-    UndoSnapshot before;
-    before.hasSettings = true;
-    before.settings = state;
-
-    applySettings (makeDefaultProject());
-    lastUndo = before;
-    panel->refresh();
-    setStatus ("RESET ALL SETTINGS / SEQUENCES KEPT / CTRL+Z TO UNDO");
-}
-
-void ModularSynthEditor::undo()
-{
-    if (! lastUndo.has_value())
-    {
-        setStatus ("NOTHING TO UNDO");
-        return;
-    }
-    const auto& snap = *lastUndo;
-    const auto& state = proc.getUiState();
-    for (int t = 0; t < kNumTracks; ++t)
-    {
-        const auto& now = state.tracks[(size_t) t].patterns[(size_t) snap.pattern];
-        for (int s = 0; s < kNumSteps && ! snap.hasSettings; ++s)
-            if (! juce::exactlyEqual (now[(size_t) s], snap.steps[(size_t) t][(size_t) s]))
-                send (CommandType::SetStep, t, snap.pattern * kNumSteps + s, snap.steps[(size_t) t][(size_t) s]);
-        if (snap.hasFx)
-            for (int i = 0; i < kNumFxParams; ++i)
-                send (CommandType::SetFxParam, t, i, snap.fx[(size_t) t][(size_t) i]);
-    }
-    if (snap.hasFx)
-        for (int i = 0; i < kNumFxParams; ++i)
-            send (CommandType::SetFxParam, -1, i, snap.masterFx[(size_t) i]);
-    if (snap.hasSettings)
-    {
-        applySettings (snap.settings);
-        panel->refresh();
-        setStatus ("UNDONE / SETTINGS BEFORE THE RESET RESTORED");
-    }
-    else
-        setStatus ("UNDONE / P" + juce::String (snap.pattern + 1) + (snap.hasFx ? " AND THE EFFECTS RESTORED" : " RESTORED"));
-    lastUndo.reset();
-}
-
-void ModularSynthEditor::copySequence (bool wholePattern)
-{
-    const auto& state = proc.getUiState();
-    const int pattern = viewedPattern (state);
-    SequenceClipboard clip;
-    clip.wholePattern = wholePattern || selected < 0;
-    if (clip.wholePattern)
-    {
-        for (int t = 0; t < kNumTracks; ++t)
-            clip.steps[(size_t) t] = state.tracks[(size_t) t].patterns[(size_t) pattern];
-        clip.source = "P" + juce::String (pattern + 1);
-    }
-    else
-    {
-        clip.steps[0] = state.tracks[(size_t) selected].patterns[(size_t) pattern];
-        clip.source = look::pad (selected + 1, 2) + " " + proc.trackName (selected) + " P" + juce::String (pattern + 1);
-    }
-    clipboard = clip;
-    setStatus ("COPIED " + clip.source + (clip.wholePattern ? " (ALL TRACKS)" : "")
-               + " / PICK A " + (clip.wholePattern ? "PATTERN (P1-P4)" : "DRUM OR PATTERN") + " AND PASTE (CTRL+V)");
-}
-
-void ModularSynthEditor::pasteSequence()
-{
-    if (! clipboard.has_value())
-    {
-        setStatus ("NOTHING COPIED YET / SELECT A TRACK AND PRESS COPY (CTRL+C)");
-        return;
-    }
-    const int pattern = viewedPattern (proc.getUiState());
-    const auto& clip = *clipboard;
-    lastUndo = takeSnapshot (pattern, false);
-
-    auto write = [this, pattern] (int track, const Pattern& steps) {
-        const auto& now = proc.getUiState().tracks[(size_t) track].patterns[(size_t) pattern];
-        for (int s = 0; s < kNumSteps; ++s)
-            if (! juce::exactlyEqual (now[(size_t) s], steps[(size_t) s]))
-                send (CommandType::SetStep, track, pattern * kNumSteps + s, steps[(size_t) s]);
-    };
-
-    if (clip.wholePattern)
-    {
-        for (int t = 0; t < kNumTracks; ++t)
-            write (t, clip.steps[(size_t) t]);
-        setStatus ("PASTED " + clip.source + " INTO P" + juce::String (pattern + 1) + " / CTRL+Z TO UNDO");
-    }
-    else if (selected >= 0)
-    {
-        write (selected, clip.steps[0]);
-        setStatus ("PASTED " + clip.source + " INTO " + look::pad (selected + 1, 2) + " " + proc.trackName (selected)
-                   + " P" + juce::String (pattern + 1) + " / CTRL+Z TO UNDO");
-    }
-    else
-    {
-        lastUndo.reset();
-        setStatus ("SELECT A TRACK TO PASTE ONE SEQUENCE INTO");
-    }
-}
-
-void ModularSynthEditor::randomizeSequence (int track)
-{
-    if (track < 0 || track >= kNumTracks)
-        return;
-    const auto& state = proc.getUiState();
-    const int pattern = viewedPattern (state);
-    const auto voice = state.tracks[(size_t) track].voice;
-    lastUndo = takeSnapshot (pattern, false);
-
-    // Chance of a hit on each step, shaped by what the drum is so the result
-    // sits in a groove: kicks lean on the beat, hats run, snares find the
-    // backbeat, everything else is sparse.
-    auto chance = [voice] (int s) {
-        const bool beat = s % 4 == 0, eighth = s % 2 == 0;
-        switch (voice)
+        if (! proc.getStudioState().tools[(size_t) t].active)
         {
-            case VoiceType::Kick:       return s == 0 ? 1.0f : beat ? 0.55f : eighth ? 0.2f : 0.12f;
-            case VoiceType::ClickHat:   return eighth ? 0.8f : 0.45f;
-            case VoiceType::NoiseSnare: return (s == 4 || s == 12) ? 0.8f : beat ? 0.1f : 0.14f;
-            case VoiceType::SineTone:
-            case VoiceType::Glitch:
-            case VoiceType::Sample:
-            case VoiceType::Count:      break;
+            windows[(size_t) t].reset();
+            continue;
         }
-        return beat ? 0.3f : 0.2f;
-    };
 
-    auto& rng = juce::Random::getSystemRandom();
-    Pattern steps {};
-    int hits = 0;
-    while (hits == 0)
-    {
-        for (int s = 0; s < kNumSteps; ++s)
+        auto bounds = defaultToolBounds (t);
+        bool open = true;
+        const auto entry = layout.getProperty (toolName (t), {});
+        if (entry.isObject())
         {
-            steps[(size_t) s] = 0.0f;
-            if (rng.nextFloat() < chance (s))
-            {
-                const float accent = s % 4 == 0 ? 0.25f : 0.0f;
-                steps[(size_t) s] = juce::jlimit (0.3f, 1.0f, 0.45f + accent + rng.nextFloat() * 0.45f);
-                ++hits;
-            }
+            open = (bool) entry.getProperty ("open", true);
+            const juce::Rectangle<int> saved ((int) entry.getProperty ("x", 0), (int) entry.getProperty ("y", 0),
+                                              (int) entry.getProperty ("w", 1320), (int) entry.getProperty ("h", 820));
+            // only where a screen still is (the project may come from another computer)
+            if (const auto* display = displays.getDisplayForRect (saved); display != nullptr && display->userArea.intersects (saved))
+                bounds = saved;
         }
-    }
 
-    for (int s = 0; s < kNumSteps; ++s)
-        send (CommandType::SetStep, track, pattern * kNumSteps + s, steps[(size_t) s]);
-    setStatus ("RANDOM " + look::pad (track + 1, 2) + " " + proc.trackName (track) + " P" + juce::String (pattern + 1)
-               + " / PRESS AGAIN FOR ANOTHER / CTRL+Z TO UNDO");
+        if (windows[(size_t) t] == nullptr)
+            createToolWindow (t, bounds);
+        else
+            windows[(size_t) t]->setBounds (bounds);
+        windows[(size_t) t]->setVisible (open);
+    }
+    storeWindowLayout();
 }
+
+// ---- transport, export, files -------------------------------------------------
 
 void ModularSynthEditor::togglePlay()
 {
-    send (proc.isPlaying() ? CommandType::Stop : CommandType::Play, 0, 0, 0.0f);
+    send (proc.isPlaying() ? CommandType::Stop : CommandType::Play, kStudio, 0, 0, 0.0f);
 }
 
 void ModularSynthEditor::stop()
 {
-    send (CommandType::Stop, 0, 0, 0.0f);
+    send (CommandType::Stop, kStudio, 0, 0, 0.0f);
 }
 
 void ModularSynthEditor::toggleRecord()
 {
     if (proc.isRecording())
     {
-        send (CommandType::RecordStop, 0, 0, 0.0f);
+        send (CommandType::RecordStop, kStudio, 0, 0, 0.0f);
     }
     else
     {
-        send (CommandType::RecordStart, 0, 0, 0.0f);
-        setStatus ("RECORDING / PLAY PADS, MUTE, MOVE ANYTHING / R OR STOP TO END");
+        send (CommandType::RecordStart, kStudio, 0, 0, 0.0f);
+        setStatus ("RECORDING EVERY TOOL / PLAY PADS, MUTE, MOVE ANYTHING / R OR STOP TO END");
     }
 }
 
@@ -1476,16 +568,16 @@ void ModularSynthEditor::chooseExport()
     }
 
     juce::PopupMenu m;
-    m.addSectionHeader ("EXPORT WAV // MASTER + STEMS");
+    m.addSectionHeader ("EXPORT WAV // MASTER + EACH TOOL + STEMS");
     const auto& take = proc.getLastTake();
     if (take.has_value())
         m.addItem (1, "RECORDED TAKE  " + formatTime ((double) take->length / take->sampleRate));
     else
         m.addItem (1, "RECORDED TAKE  (PRESS REC FIRST)", false);
     m.addSeparator();
+    const auto patterns = "DRUMS P" + juce::String (viewedPattern (proc.getUiState()) + 1);
     for (int loops : { 1, 4, 8, 16 })
-        m.addItem (100 + loops, "PATTERN P" + juce::String (viewedPattern (proc.getUiState()) + 1)
-                                    + " x" + juce::String (loops));
+        m.addItem (100 + loops, "PATTERNS ON SCREEN (" + patterns + ") x" + juce::String (loops));
 
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&exportButton), [this] (int r) {
         if (r <= 0)
@@ -1495,7 +587,7 @@ void ModularSynthEditor::chooseExport()
         if (r == 1 && proc.getLastTake().has_value())
             startExport (*proc.getLastTake(), "take-" + stamp);
         else if (r > 100)
-            startExport (makePatternTake (proc.getUiState(), r - 100, proc.getEngineSampleRate()),
+            startExport (makePatternTake (proc.getStudioState(), r - 100, proc.getEngineSampleRate()),
                          "p" + juce::String (viewedPattern (proc.getUiState()) + 1) + "-x" + juce::String (r - 100) + "-" + stamp);
     });
 }
@@ -1541,6 +633,7 @@ void ModularSynthEditor::startExport (Take take, const juce::String& baseName)
 
 void ModularSynthEditor::saveProject()
 {
+    storeWindowLayout();
     chooser = std::make_unique<juce::FileChooser> ("Save project", lastFolder.getChildFile ("project.msynth"), "*.msynth");
     chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting,
                           [this] (const juce::FileChooser& fc) {
@@ -1566,11 +659,12 @@ void ModularSynthEditor::openProject()
                                   setStatus (error.isNotEmpty() ? error.toUpperCase() : "OPENED " + file.getFileName().toUpperCase());
                               else
                                   setStatus (error.toUpperCase());
-                              panel->refresh();
                           });
 }
 
-bool ModularSynthEditor::keyPressed (const juce::KeyPress& key)
+// ---- keys, timer, drawing -----------------------------------------------------
+
+bool ModularSynthEditor::handleStudioKey (const juce::KeyPress& key)
 {
     const auto mods = key.getModifiers();
     const auto c = (juce::juce_wchar) juce::CharacterFunctions::toLowerCase (key.getTextCharacter());
@@ -1579,78 +673,56 @@ bool ModularSynthEditor::keyPressed (const juce::KeyPress& key)
     {
         if (key.getKeyCode() == 'S') { saveProject(); return true; }
         if (key.getKeyCode() == 'O') { openProject(); return true; }
-        if (key.getKeyCode() == 'Z') { undo(); return true; }
-        if (key.getKeyCode() == 'C') { copySequence (mods.isShiftDown()); return true; }
-        if (key.getKeyCode() == 'V') { pasteSequence(); return true; }
-        if (key.getKeyCode() == 'R') { randomizeSequence (selected); return true; }
         return false;
     }
 
-    for (int p = 0; p < kNumPatterns; ++p)
-    {
-        if (key.getKeyCode() == juce::KeyPress::F1Key + p)
-        {
-            if (mods.isShiftDown())
-                copyPatternTo (p);
-            else
-                selectPattern (p);
-            return true;
-        }
-    }
-
     if (key == juce::KeyPress::spaceKey) { togglePlay(); return true; }
-    if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey) { clearPattern(); return true; }
     if (key == juce::KeyPress::escapeKey) { stop(); return true; }
-    if (key == juce::KeyPress::upKey) { selectTrack (selected < 0 ? kNumTracks - 1 : juce::jmax (0, selected - 1)); return true; }
-    if (key == juce::KeyPress::downKey) { selectTrack (selected < 0 || selected >= kNumTracks - 1 ? -1 : selected + 1); return true; }
     if (c == 'r') { toggleRecord(); return true; }
     if (c == 'e') { chooseExport(); return true; }
-
-    for (int t = 0; t < kNumTracks; ++t)
-    {
-        if (c == (juce::juce_wchar) kPadKeys[t][0] || c == (juce::juce_wchar) kPadKeys[t][1])
-        {
-            // Ignore auto-repeat: only the first press of a held key hits.
-            const auto now = juce::Time::getMillisecondCounter();
-            if (now - lastPadKeyTime[(size_t) t] > 60 || ! padKeyHeld[(size_t) t])
-                hitPad (t, mods.isShiftDown() ? 0.5f : 1.0f);
-            padKeyHeld[(size_t) t] = true;
-            lastPadKeyTime[(size_t) t] = now;
-            return true;
-        }
-    }
     return false;
 }
 
-bool ModularSynthEditor::keyStateChanged (bool)
+bool ModularSynthEditor::keyPressed (const juce::KeyPress& key)
 {
-    for (int t = 0; t < kNumTracks; ++t)
-        if (padKeyHeld[(size_t) t]
-            && ! juce::KeyPress::isKeyCurrentlyDown (kPadKeys[t][0])
-            && ! juce::KeyPress::isKeyCurrentlyDown (kPadKeys[t][1])
-            && ! juce::KeyPress::isKeyCurrentlyDown (juce::CharacterFunctions::toUpperCase ((juce::juce_wchar) kPadKeys[t][1])))
-            padKeyHeld[(size_t) t] = false;
-    return false;
+    return handleStudioKey (key);
 }
 
 void ModularSynthEditor::timerCallback()
 {
-    if (! keyboardFocusRequested && isShowing())
+    if (firstShow && isShowing())
     {
-        keyboardFocusRequested = true;
+        firstShow = false;
+        applyWindowLayout();
         grabKeyboardFocus();
+        for (auto& w : windows)
+            if (w != nullptr && w->isVisible())
+            {
+                w->toFront (true);
+                if (auto* content = w->getContentComponent())
+                    content->grabKeyboardFocus();
+            }
+    }
+    else if (! firstShow && proc.getWindowLayoutVersion() != appliedLayoutVersion)
+    {
+        applyWindowLayout();
     }
 
     proc.syncPatternFromEngine();
-    const auto& state = proc.getUiState();
+    const auto& studio = proc.getStudioState();
     const double sr = proc.getEngineSampleRate();
     const bool recording = proc.isRecording();
 
-    for (int p = 0; p < kNumPatterns; ++p)
+    for (int t = 0; t < kNumToolSlots; ++t)
     {
-        patternButtons[(size_t) p].setOn (state.pattern == p);
-        patternButtons[(size_t) p].setMarked (state.queuedPattern == p);
+        auto& w = windows[(size_t) t];
+        if (w != nullptr && ! studio.tools[(size_t) t].active)
+            w.reset();
+        if (w != nullptr && w->isVisible() && w->onTick)
+            w->onTick();
+        strips[(size_t) t]->tick();
     }
+    master->refresh();
 
     if (auto take = proc.takeFinishedRecording())
         setStatus ("TAKE READY " + formatTime ((double) take->length / take->sampleRate) + " / "
@@ -1659,9 +731,9 @@ void ModularSynthEditor::timerCallback()
     playButton.setOn (proc.isPlaying());
     recButton.setOn (recording);
 
-    bpmReadout.setText (juce::String (state.bpm, 1));
-    swingReadout.setText (look::pad (juce::roundToInt (state.swing * 100.0f), 2) + " %");
-    stepReadout.setText ("P" + juce::String (state.pattern + 1) + (state.queuedPattern >= 0 ? ">P" + juce::String (state.queuedPattern + 1) : juce::String())
+    bpmReadout.setText (juce::String (studio.bpm, 1));
+    swingReadout.setText (look::pad (juce::roundToInt (studio.swing * 100.0f), 2) + " %");
+    stepReadout.setText (look::pad (proc.currentStep() / 4 + 1, 1) + "." + look::pad (proc.currentStep() % 4 + 1, 1)
                          + "  " + look::pad (proc.currentStep() + 1, 2) + "/" + juce::String (kNumSteps));
     const auto pos = recording ? proc.recordedSamples() : proc.playedSamples();
     posReadout.setText (formatTime ((double) pos / sr) + "  " + juce::String::toHexString ((juce::int64) pos).paddedLeft ('0', 8).toUpperCase());
@@ -1684,9 +756,6 @@ void ModularSynthEditor::timerCallback()
         takeReadout.setColour (look::dim);
     }
 
-    grid->tick();
-    panel->refresh();
-
     if (exportProgress.load() >= 0.0f || ! status.isEmpty())
         repaint (0, 0, getWidth(), kHeaderHeight);
     repaint (0, getHeight() - kStatusHeight, getWidth(), kStatusHeight);
@@ -1702,7 +771,7 @@ void ModularSynthEditor::paint (juce::Graphics& g)
     g.drawText ("MODULAR-SYNTH", kMargin, 12, 260, 20, juce::Justification::centredLeft);
     g.setFont (look::mono (9.5f));
     g.setColour (look::dim);
-    g.drawText ("DATAMATICS KIT // 8 TRACKS x 16 STEPS x 4 PATTERNS // V0.2", kMargin, 32, 360, 14, juce::Justification::centredLeft);
+    g.drawText ("STUDIO // ONE CLOCK, ONE MASTER, A WINDOW PER TOOL // V0.3", kMargin, 32, 380, 14, juce::Justification::centredLeft);
 
     // header rule, and the export progress as a blue line along it
     g.setColour (look::faint);
@@ -1717,6 +786,23 @@ void ModularSynthEditor::paint (juce::Graphics& g)
                     getWidth() - 160 - kMargin, kHeaderHeight - 16, 160, 12, juce::Justification::centredRight);
     }
 
+    // tools section label, and what comes next under the last tool
+    g.setFont (look::mono (11.0f, true));
+    g.setColour (look::ink);
+    g.drawText ("TOOLS", kMargin, kHeaderHeight + 6, 200, 16, juce::Justification::centredLeft);
+    g.setFont (look::mono (9.5f));
+    g.setColour (look::dim);
+    g.drawText ("OPEN SHOWS A TOOL'S WINDOW // CLOSING THE WINDOW KEEPS IT PLAYING // REMOVE TAKES IT OUT OF THE PROJECT",
+                kMargin + 80, kHeaderHeight + 6, getWidth() - 2 * kMargin - 80, 16, juce::Justification::centredRight);
+    const int nextY = kHeaderHeight + kToolsLabelHeight + kNumToolSlots * kStripHeight;
+    g.setColour (look::faint);
+    g.fillRect (kMargin, nextY, getWidth() - 2 * kMargin, 1);
+    g.setColour (look::dim);
+    g.drawText ("02 BASS SYNTH // 8 SOUNDS, SCALE LOCK, ADSR, CHORUS // NEXT UPDATE", kMargin + 48, nextY + 8, 600, 14,
+                juce::Justification::centredLeft);
+    g.drawText ("03 LOOPER // AUDIO IN, LOOPS ON THE STUDIO CLOCK // AFTER THAT", kMargin + 48, nextY + 26, 600, 14,
+                juce::Justification::centredLeft);
+
     // status line
     const auto statusArea = juce::Rectangle<int> (kMargin, getHeight() - kStatusHeight, getWidth() - 2 * kMargin, kStatusHeight);
     g.setColour (look::faint);
@@ -1726,8 +812,7 @@ void ModularSynthEditor::paint (juce::Graphics& g)
     g.setColour (proc.isRecording() ? look::red : look::ink);
     g.drawText (fresh ? status : juce::String ("READY"), statusArea, juce::Justification::centredLeft, true);
     g.setColour (look::dim);
-    g.drawText ("SPACE PLAY  R REC  E EXPORT  1-8 / A-K PADS  F1-F4 PATTERN  CTRL+C/V COPY/PASTE (+SHIFT = WHOLE PATTERN)  CTRL+R RANDOM  DEL CLEAR  DRAG STEP = VELOCITY  RIGHT-CLICK NAME = VOICE",
-                statusArea, juce::Justification::centredRight, true);
+    g.drawText ("SPACE PLAY  ESC STOP  R REC  E EXPORT  CTRL+S SAVE  CTRL+O OPEN", statusArea, juce::Justification::centredRight, true);
 }
 
 void ModularSynthEditor::resized()
@@ -1748,20 +833,10 @@ void ModularSynthEditor::resized()
         b->setBounds (buttons.removeFromLeft (80));
         buttons.removeFromLeft (6);
     }
-    buttons.removeFromLeft (18);
-    for (auto& b : patternButtons)
-    {
-        b.setBounds (buttons.removeFromLeft (44));
-        buttons.removeFromLeft (4);
-    }
-    buttons.removeFromLeft (8);
-    clearButton.setBounds (buttons.removeFromLeft (72));
-    buttons.removeFromLeft (6);
-    resetButton.setBounds (buttons.removeFromLeft (72));
 
     // readouts across the top right
-    auto readouts = header.withTrimmedTop (8).withTrimmedLeft (380);
-    const int widths[] = { 90, 100, 120, 210, 140, 180 };
+    auto readouts = header.withTrimmedTop (8).withTrimmedLeft (400);
+    const int widths[] = { 90, 100, 110, 210, 140, 180 };
     DataReadout* order[] = { &bpmReadout, &swingReadout, &stepReadout, &posReadout, &rateReadout, &takeReadout };
     for (int i = 0; i < 6; ++i)
     {
@@ -1770,6 +845,9 @@ void ModularSynthEditor::resized()
     }
 
     area.removeFromBottom (kStatusHeight);
-    panel->setBounds (area.removeFromBottom (kPanelHeight).reduced (kMargin, 0));
-    grid->setBounds (area.reduced (kMargin, 6));
+    master->setBounds (area.removeFromBottom (kMasterHeight).reduced (kMargin, 0));
+
+    area.removeFromTop (kToolsLabelHeight);
+    for (auto& s : strips)
+        s->setBounds (area.removeFromTop (kStripHeight).reduced (kMargin, 0));
 }

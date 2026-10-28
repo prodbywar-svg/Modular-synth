@@ -32,6 +32,8 @@ set(ENGINE_SOURCES
     Source/engine/Effects.cpp
     Source/engine/Hr16Bank.cpp
     Source/engine/EngineCore.cpp
+    Source/engine/StudioState.cpp
+    Source/engine/StudioEngine.cpp
     Source/engine/OfflineRenderer.cpp)
 
 # The Alesis HR-16 sounds are compiled into the app.
@@ -68,6 +70,8 @@ target_sources(ModularSynth PRIVATE
     ${ENGINE_SOURCES}
     Source/app/PluginProcessor.cpp
     Source/app/PluginEditor.cpp
+    Source/app/DrumMachineView.cpp
+    Source/app/Shared.cpp
     Source/app/Widgets.cpp)
 
 target_include_directories(ModularSynth PRIVATE Source)

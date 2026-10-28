@@ -25,6 +25,26 @@ On iPhone: Safari → Share → **Add to Home Screen** opens it full screen like
 app. Exported WAVs go to the share sheet (Save to Files, AirDrop...). Projects
 are the same `.msynth` files as on Windows, so they move between the two.
 
+## The studio
+
+The app opens two windows:
+
+- the **studio window**: PLAY / STOP / REC, EXPORT, SAVE / OPEN, tempo and swing,
+  one row per tool, and the studio **MASTER** effects rack that every tool goes through;
+- a window for each **tool**. For now that is the **drum machine**; a bass synth and
+  a looper for your audio interface come next.
+
+Each tool's row in the studio window shows its sound as a scrolling barcode, its
+**LEVEL**, **M** / **S** (mute / solo the whole tool), **OPEN** / **HIDE** for its
+window, and **REMOVE**, which takes it out of the project (it asks first). A
+removed tool's row offers **+ ADD** to bring a fresh one back, already in time
+with the others. Closing a tool's window only hides it: it keeps playing.
+
+All tools run on one clock: one tempo, one swing, patterns switch together at the
+end of the bar. Space, Esc, R, E, Ctrl+S and Ctrl+O work from any window. Saved
+projects remember which tools are in, and where their windows sit. Projects
+from earlier versions open as a studio with just the drum machine.
+
 ## Playing it
 
 | Do this | To |
@@ -32,8 +52,8 @@ are the same `.msynth` files as on Windows, so they move between the two.
 | `Space` / **PLAY** | start and stop the pattern |
 | Click a step | switch it on or off; drag up/down on a lit step to set how hard it hits |
 | **P1**-**P4** / `F1`-`F4` | pick a pattern. While playing, the new one waits until the current pattern ends (outlined in blue while it waits) |
-| **CLEAR** / `Delete` | empty the pattern on screen and reset every effect (tracks and master) to its default (`Ctrl+Z` brings it all back) |
-| **RESET** | put every setting back to how the app starts: each drum's sound, character, controls, level, pan, mute/solo, every effect, the master, tempo and swing. Sequences and loaded samples are kept (`Ctrl+Z` brings the old settings back) |
+| **CLEAR** / `Delete` | empty the pattern on screen and reset every drum effect (tracks and drum bus) to its default (`Ctrl+Z` brings it all back) |
+| **RESET** | put every drum machine setting back to how the app starts: each drum's sound, character, controls, level, pan, mute/solo, every effect and the drum bus. Sequences, loaded samples and the studio's tempo are kept (`Ctrl+Z` brings the old settings back) |
 | **COPY DRUM**, then **PASTE** (bottom panel), or `Ctrl+C` / `Ctrl+V` | copy the selected drum's sequence, then select another drum (or switch pattern) and paste it there |
 | **COPY PATTERN**, then **PASTE**, or `Ctrl+Shift+C` / `Ctrl+V` | duplicate every drum's sequence: copy on P1, switch to P2, paste |
 | **RANDOM** (bottom panel) or `Ctrl+R` | write a fresh random sequence for the selected drum on the pattern on screen; press again for another. Kicks lean on the beat, hats run, snares find the backbeat |
@@ -47,7 +67,7 @@ are the same `.msynth` files as on Windows, so they move between the two.
 | **MS** / **NOTE** switches | set a time control in milliseconds or in note lengths that follow the tempo |
 | Drag **BPM** / **SWING** up or down | change tempo and swing |
 | **M** / **S** | mute / solo a track |
-| Click **MASTER** | the master effects rack |
+| Click **DRUM BUS** | the drum machine's own effects rack (all 8 drums, before the studio master) |
 | `R` / **REC** | record a performance (starts the pattern from step 1) |
 | **EXPORT** / `E` | save the recording, or the pattern looped, as WAV files |
 | `Ctrl+S` / `Ctrl+O` | save / open a project (`.msynth`) |
@@ -80,7 +100,7 @@ Pitch controls show the note as well as the frequency, e.g. `E1 41.2 Hz`.
 
 ### Effects
 
-Every track, and the master, has the same effects rack, in this order:
+Every track, the drum bus and the studio master have the same effects rack, in this order:
 
 1. **Bitcrusher**: bit depth and sample-rate reduction.
 2. **Distortion**: soft clip, hard clip, wavefold or rectify, with a tone control and dry/wet mix.
@@ -94,15 +114,17 @@ Every track, and the master, has the same effects rack, in this order:
 
 ### Recording and export
 
-Press **REC**, play: hit pads, mute tracks, move any control. Press **REC** or
+Press **REC** (studio window, or `R` in any window), play: hit pads, mute tracks, move any control in any tool. Press **REC** or
 **STOP** to finish. The app stores what you *did*, not the audio, so the export
 can rebuild it perfectly, once for the master and once per track.
 
 **EXPORT** writes a folder containing:
 
-- `<name>_Master.wav`: the full mix after the master effects
-- `<name>_01-KICK.wav`, `<name>_02-CLICK.wav`, ...: each track on its own, after its
-  own effects **and** its share of the master effects
+- `<name>_Master.wav`: the full mix after the studio master effects
+- `<name>_DRUMS.wav`: each tool on its own (its own bus **and** its share of the
+  studio master effects)
+- `<name>_DRUMS-01-KICK.wav`, `<name>_DRUMS-02-CLICK.wav`, ...: each track of a tool
+  on its own, after its own effects, its tool's bus and its share of the master
 
 All files are 24-bit stereo at the app's sample rate, start at the same moment
 and have the same length (including the reverb/delay tail), so they line up in
@@ -144,14 +166,17 @@ node web/tests/parity.mjs <native_render>  # wasm output must match the native e
 ### Layout
 
 - `Source/engine`: the instrument with no UI or audio-device code.
-  `EngineCore` (sequencer, patterns, voices, mixer, master), `Voice` (every voice
+  `StudioEngine` (every tool on one clock, through the studio master) and
+  `StudioState` (the tools, studio commands, save/open),
+  `EngineCore` (the drum machine: sequencer, patterns, voices, mixer, drum bus), `Voice` (every voice
   in its three characters), `Hr16Bank` (the embedded HR-16 samples in
   `assets/hr16`), `FxChain` (effects rack) and `Effects` (grain delay, reverb,
   Psychosis), `OfflineRenderer` (take replay and WAV export),
   `ProjectState` (project data, commands, save/open).
 - `Source/app`: `PluginProcessor` runs the engine on the audio thread, receives
   UI commands through a lock-free queue and records them with sample positions;
-  `PluginEditor` and `Widgets` are the interface.
+  `PluginEditor` is the studio window, which opens each tool's window
+  (`DrumMachineView`); `Shared` and `Widgets` hold what they share.
 - `web/wasm/WebEngine.cpp`: the engine as plain C functions for the browser.
   `web/site`: the page (`app.js`), the audio worklet that runs the engine
   (`worklet.js`) and the WAV reader/writer.
