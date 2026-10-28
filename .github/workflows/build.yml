@@ -65,3 +65,44 @@ jobs:
         run: cmake --build build --target EngineTests
       - name: Run tests
         run: ./build/EngineTests_artefacts/Release/EngineTests
+
+  web:
+    name: Browser app
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install WebAssembly toolchain
+        run: sudo apt-get update && sudo apt-get install -y clang-18 lld-18 wasi-libc libc++-18-dev-wasm32 libc++abi-18-dev-wasm32 libclang-rt-18-dev-wasm32
+      - name: Build
+        run: CXX=clang++-18 ./web/build.sh
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      # The same commands through engine.wasm and a native build of the same
+      # engine code: the outputs must match.
+      - name: Check it sounds the same as the desktop engine
+        run: |
+          clang++-18 -std=c++17 -O2 -DMS_NO_JUCE=1 -ISource \
+            Source/engine/{Params,ProjectState,Voice,FxChain,Effects,Hr16Bank,EngineCore}.cpp \
+            web/wasm/WebEngine.cpp web/tests/native_render.cpp -o native_render
+          node web/tests/parity.mjs ./native_render
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: web/site
+
+  # Every push to main publishes the browser app on GitHub Pages
+  # (Settings > Pages > Source must be "GitHub Actions").
+  web-publish:
+    name: Publish browser app
+    needs: web
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

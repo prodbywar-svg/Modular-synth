@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Modular-synth">
+<title>Modular-synth</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app">
+  <header class="top">
+    <div class="title">
+      <span class="name">MODULAR-SYNTH</span>
+      <span class="sub" id="status">8 TRACKS x 16 STEPS x 4 PATTERNS</span>
+    </div>
+    <div class="readouts">
+      <button class="readout" id="bpm" aria-label="Tempo, drag up or down"><span class="label">BPM / DRAG</span><span class="value" id="bpmValue">132.0</span></button>
+      <button class="readout" id="swing" aria-label="Swing, drag up or down"><span class="label">SWING</span><span class="value" id="swingValue">00 %</span></button>
+      <div class="readout"><span class="label">STEP</span><span class="value" id="stepValue">P1 01/16</span></div>
+    </div>
+  </header>
+
+  <div class="transport">
+    <button id="play" class="btn">PLAY</button>
+    <button id="stop" class="btn">STOP</button>
+    <button id="rec" class="btn rec">REC</button>
+    <span class="gap"></span>
+    <button class="btn pat" data-pattern="0">P1</button>
+    <button class="btn pat" data-pattern="1">P2</button>
+    <button class="btn pat" data-pattern="2">P3</button>
+    <button class="btn pat" data-pattern="3">P4</button>
+  </div>
+
+  <main>
+    <!-- SEQ -->
+    <section id="view-seq" class="view">
+      <div id="tracks" class="tracks"></div>
+      <div id="focus" class="focus">
+        <div class="signal">
+          <canvas id="signal"></canvas>
+        </div>
+        <div class="tools">
+          <button class="btn small" id="copyDrum">COPY</button>
+          <button class="btn small" id="copyAll">COPY ALL</button>
+          <button class="btn small" id="paste">PASTE</button>
+          <button class="btn small" id="random">RANDOM</button>
+          <button class="btn small" id="clear">CLEAR</button>
+          <button class="btn small" id="undo">UNDO</button>
+        </div>
+        <div id="tags" class="tags"></div>
+      </div>
+      <div id="grid" class="grid"></div>
+    </section>
+
+    <!-- PADS -->
+    <section id="view-pads" class="view">
+      <div id="padStrip" class="pad-strip"></div>
+      <div id="pads" class="pads"></div>
+    </section>
+
+    <!-- SOUND -->
+    <section id="view-sound" class="view">
+      <div id="soundTracks" class="chips"></div>
+      <div class="sound-head">
+        <label class="select"><span class="sr">Drum type</span><select id="voiceType"></select></label>
+        <div id="characters" class="chips three"></div>
+      </div>
+      <div id="sections" class="sections"></div>
+      <div id="sliders" class="sliders"></div>
+      <div class="chips three bottom" id="trackButtons">
+        <button class="btn" id="mute">MUTE</button>
+        <button class="btn" id="solo">SOLO</button>
+        <button class="btn" id="loadSample">LOAD SAMPLE</button>
+      </div>
+    </section>
+
+    <!-- FILE -->
+    <section id="view-file" class="view file">
+      <h2>EXPORT WAV // MASTER + ONE STEM PER DRUM</h2>
+      <div class="list">
+        <button class="btn wide" id="exportTake">LAST RECORDING</button>
+        <div class="chips four">
+          <button class="btn" data-loops="1">PATTERN x1</button>
+          <button class="btn" data-loops="4">x4</button>
+          <button class="btn" data-loops="8">x8</button>
+          <button class="btn" data-loops="16">x16</button>
+        </div>
+        <div class="progress" id="exportProgress"><span></span></div>
+        <div id="exportResult" class="result"></div>
+      </div>
+      <h2>PROJECT // SAME .MSYNTH FILES AS THE WINDOWS APP</h2>
+      <div class="chips three">
+        <button class="btn" id="save">SAVE</button>
+        <button class="btn" id="open">OPEN</button>
+        <button class="btn" id="newProject">NEW</button>
+      </div>
+      <h2>ON IPHONE</h2>
+      <p class="note">SAFARI &gt; SHARE &gt; ADD TO HOME SCREEN opens this like an app, full screen. Your project is kept on the phone between sessions. Exported WAVs go to the share sheet: SAVE TO FILES, AIRDROP to your PC, or any app.</p>
+    </section>
+  </main>
+
+  <nav class="tabs">
+    <button data-view="seq" class="on">SEQ</button>
+    <button data-view="pads">PADS</button>
+    <button data-view="sound">SOUND</button>
+    <button data-view="file">FILE</button>
+  </nav>
+
+  <div id="start" class="start">
+    <button id="startButton">
+      <span class="big">MODULAR-SYNTH</span>
+      <span class="small" id="startText">LOADING…</span>
+    </button>
+  </div>
+  <input type="file" id="sampleInput" accept="audio/*,.wav,.aif,.aiff,.flac,.mp3,.m4a" hidden>
+  <input type="file" id="projectInput" accept=".msynth,application/json" hidden>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

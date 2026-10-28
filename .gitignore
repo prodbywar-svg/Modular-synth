@@ -4,3 +4,7 @@ cmake-build-*/
 .vscode/
 *.user
 .DS_Store
+
+# browser version build output (web/build.sh)
+web/site/engine.wasm
+web/site/hr16/

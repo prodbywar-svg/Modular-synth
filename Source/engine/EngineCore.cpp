@@ -50,7 +50,7 @@ void EngineCore::apply (const Command& c)
     {
         if (c.track >= 0 && c.track < kNumTracks)
         {
-            voices[(size_t) c.track].trigger (project.tracks[(size_t) c.track], juce::jlimit (0.0f, 1.0f, c.value));
+            voices[(size_t) c.track].trigger (project.tracks[(size_t) c.track], std::clamp (c.value, 0.0f, 1.0f));
             triggeredThisBlock[(size_t) c.track] = true;
         }
         return;

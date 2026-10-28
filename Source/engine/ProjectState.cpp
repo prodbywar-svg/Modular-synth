@@ -1,5 +1,7 @@
 #include "ProjectState.h"
 
+#include <algorithm>
+
 namespace ms
 {
 namespace
@@ -17,8 +19,9 @@ void setSteps (Pattern& p, std::initializer_list<std::pair<int, float>> steps)
         p[(size_t) step] = velocity;
 }
 
-float clamp01 (float v) { return juce::jlimit (0.0f, 1.0f, v); }
+float clamp01 (float v) { return std::clamp (v, 0.0f, 1.0f); }
 
+#if ! MS_NO_JUCE
 juce::var floatArray (const float* values, int count)
 {
     juce::Array<juce::var> a;
@@ -70,6 +73,7 @@ void fxFromVar (const juce::var& v, FxParams& fx)
         fx[fxReverbMix] = at (8);
     }
 }
+#endif
 } // namespace
 
 ProjectState makeDefaultProject()
@@ -187,7 +191,7 @@ void applyToState (ProjectState& p, const Command& c)
             }
             break;
         case CommandType::SetBpm:
-            p.bpm = juce::jlimit (kMinBpm, kMaxBpm, c.value);
+            p.bpm = std::clamp (c.value, kMinBpm, kMaxBpm);
             break;
         case CommandType::SetSwing:
             p.swing = clamp01 (c.value);
@@ -207,6 +211,7 @@ void applyToState (ProjectState& p, const Command& c)
     }
 }
 
+#if ! MS_NO_JUCE
 juce::var projectToVar (const ProjectState& p)
 {
     auto root = std::make_unique<juce::DynamicObject>();
@@ -285,4 +290,5 @@ bool projectFromVar (const juce::var& v, ProjectState& p, std::array<juce::Strin
     p = result;
     return true;
 }
+#endif
 } // namespace ms

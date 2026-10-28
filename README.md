@@ -13,6 +13,18 @@ WAV plus one WAV per instrument.
 3. Windows may warn that the app is from an unknown publisher. Click **More info → Run anyway**.
 4. Click **Options** (top-left of the window) to pick your audio output (and a MIDI controller if you have one).
 
+### On a phone (or any browser)
+
+Open **https://prodbywar-svg.github.io/Modular-synth/** and tap **TAP TO START**.
+It is the same engine and sound as the Windows app, with a touch layout: tabs
+for **SEQ** (drums and steps), **PADS** (play live), **SOUND** (drum and
+effects settings) and **FILE** (export WAV, save and open projects). Turn the
+phone sideways for the full 8 x 16 grid.
+
+On iPhone: Safari → Share → **Add to Home Screen** opens it full screen like an
+app. Exported WAVs go to the share sheet (Save to Files, AirDrop...). Projects
+are the same `.msynth` files as on Windows, so they move between the two.
+
 ## Playing it
 
 | Do this | To |
@@ -118,6 +130,16 @@ libxcomposite-dev libgl1-mesa-dev`.
 Every push builds the Windows app on GitHub Actions; pushes to `main` publish it
 as a release.
 
+The browser version (`web/`) compiles the same `Source/engine` code to
+WebAssembly with plain clang (no JUCE: `MS_NO_JUCE`), and pushes to `main`
+publish it on GitHub Pages.
+
+```
+./web/build.sh                          # needs clang + wasi-libc + libc++ for wasm32
+cd web/site && python3 -m http.server   # then open http://localhost:8000
+node web/tests/parity.mjs <native_render>  # wasm output must match the native engine
+```
+
 ### Layout
 
 - `Source/engine`: the instrument with no UI or audio-device code.
@@ -129,5 +151,8 @@ as a release.
 - `Source/app`: `PluginProcessor` runs the engine on the audio thread, receives
   UI commands through a lock-free queue and records them with sample positions;
   `PluginEditor` and `Widgets` are the interface.
+- `web/wasm/WebEngine.cpp`: the engine as plain C functions for the browser.
+  `web/site`: the page (`app.js`), the audio worklet that runs the engine
+  (`worklet.js`) and the WAV reader/writer.
 - `tests/EngineTests.cpp`: headless tests (timing, determinism, stems summing to
   the master, export files, recorded-event replay, save/open).

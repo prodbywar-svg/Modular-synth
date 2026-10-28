@@ -16,4 +16,10 @@ void loadHr16Bank();
 
 // nullptr if the index is out of range or the bank isn't loaded.
 const SampleData* hr16Sample (VoiceType, int index);
+
+#if MS_NO_JUCE
+// Without JUCE the host decodes the WAVs and hands each one over (mono).
+constexpr int kNumHr16Files = 56;
+void setHr16File (int fileNumber, const float* samples, int length, double sampleRate);
+#endif
 } // namespace ms
