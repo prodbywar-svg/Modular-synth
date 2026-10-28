@@ -23,10 +23,18 @@ void resetTool (StudioState& s, int tool)
         s.bass[(size_t) b].bpm = s.bpm;
         s.bass[(size_t) b].swing = s.swing;
     }
+    else if (const int l = looperIndex (tool); l >= 0)
+    {
+        s.loopers[(size_t) l] = makeDefaultLooper();
+        s.loopers[(size_t) l].bpm = s.bpm;
+        s.loopers[(size_t) l].swing = s.swing;
+    }
 }
 
-const char* const kToolNames[kNumToolSlots] = { "DRUMS", "BASS-1", "BASS-2", "BASS-3", "BASS-4" };
-const char* const kToolTitles[kNumToolSlots] = { "DRUM MACHINE", "BASS SYNTH 1", "BASS SYNTH 2", "BASS SYNTH 3", "BASS SYNTH 4" };
+const char* const kToolNames[kNumToolSlots] = { "DRUMS", "BASS-1", "BASS-2", "BASS-3", "BASS-4",
+                                                "LOOP-1", "LOOP-2", "LOOP-3", "LOOP-4" };
+const char* const kToolTitles[kNumToolSlots] = { "DRUM MACHINE", "BASS SYNTH 1", "BASS SYNTH 2", "BASS SYNTH 3", "BASS SYNTH 4",
+                                                 "LOOPER 1", "LOOPER 2", "LOOPER 3", "LOOPER 4" };
 } // namespace
 
 std::array<ToolMix, kNumToolSlots> StudioState::defaultToolMix()
@@ -49,6 +57,11 @@ StudioState makeDefaultStudio()
     StudioState s;
     s.bpm = s.drums.bpm;
     s.swing = s.drums.swing;
+    for (auto& l : s.loopers)
+    {
+        l.bpm = s.bpm;
+        l.swing = s.swing;
+    }
     return s;
 }
 
@@ -63,6 +76,11 @@ StudioState studioWithDrums (const ProjectState& drums)
         b.bpm = s.bpm;
         b.swing = s.swing;
     }
+    for (auto& l : s.loopers)
+    {
+        l.bpm = s.bpm;
+        l.swing = s.swing;
+    }
     for (int t = 0; t < kNumToolSlots; ++t)
         s.tools[(size_t) t].active = t == kDrumTool;
     return s;
@@ -70,7 +88,23 @@ StudioState studioWithDrums (const ProjectState& drums)
 
 ToolKind toolKind (int tool)
 {
-    return bassIndex (tool) >= 0 ? ToolKind::Bass : ToolKind::Drums;
+    if (bassIndex (tool) >= 0)
+        return ToolKind::Bass;
+    if (looperIndex (tool) >= 0)
+        return ToolKind::Looper;
+    return ToolKind::Drums;
+}
+
+int toolTracks (int tool)
+{
+    switch (toolKind (tool))
+    {
+        case ToolKind::Bass: return kBassRows;
+        case ToolKind::Looper: return kLooperTracks;
+        case ToolKind::Drums:
+        case ToolKind::Count: break;
+    }
+    return kNumTracks;
 }
 
 const char* toolName (int tool) { return kToolNames[std::clamp (tool, 0, kNumToolSlots - 1)]; }
@@ -99,6 +133,8 @@ void applyToStudio (StudioState& s, const Command& c)
         applyToState (s.drums, c);
         for (auto& b : s.bass)
             applyToBass (b, c);
+        for (auto& l : s.loopers)
+            applyToLooper (l, c);
         return;
     }
     if (c.type == CommandType::SetSwing)
@@ -107,6 +143,8 @@ void applyToStudio (StudioState& s, const Command& c)
         applyToState (s.drums, c);
         for (auto& b : s.bass)
             applyToBass (b, c);
+        for (auto& l : s.loopers)
+            applyToLooper (l, c);
         return;
     }
     if (c.type == CommandType::AddTool)
@@ -149,10 +187,17 @@ void applyToStudio (StudioState& s, const Command& c)
         applyToState (s.drums, c);
     else if (const int b = bassIndex (c.tool); b >= 0)
         applyToBass (s.bass[(size_t) b], c);
+    else if (const int l = looperIndex (c.tool); l >= 0)
+        applyToLooper (s.loopers[(size_t) l], c);
 }
 
 #if ! MS_NO_JUCE
 juce::var studioToVar (const StudioState& s)
+{
+    return studioToVar (s, {});
+}
+
+juce::var studioToVar (const StudioState& s, const std::array<LoopFiles, kMaxLoopers>& loopFiles)
 {
     auto root = std::make_unique<juce::DynamicObject>();
     root->setProperty ("format", "modular-synth");
@@ -178,14 +223,19 @@ juce::var studioToVar (const StudioState& s)
             o->setProperty ("state", projectToVar (s.drums));
         else if (const int b = bassIndex (t); b >= 0)
             o->setProperty ("state", bassToVar (s.bass[(size_t) b]));
+        else if (const int l = looperIndex (t); l >= 0)
+            o->setProperty ("state", looperToVar (s.loopers[(size_t) l], loopFiles[(size_t) l]));
         tools.add (juce::var (o.release()));
     }
     root->setProperty ("tools", tools);
     return juce::var (root.release());
 }
 
-bool studioFromVar (const juce::var& v, StudioState& out, std::array<juce::String, kNumTracks>& drumSamplePaths)
+bool studioFromVar (const juce::var& v, StudioState& out, std::array<juce::String, kNumTracks>& drumSamplePaths,
+                    std::array<LoopFiles, kMaxLoopers>* loopFiles)
 {
+    if (loopFiles != nullptr)
+        *loopFiles = {};
     if (v.getProperty ("format", {}).toString() != "modular-synth")
         return false;
 
@@ -225,6 +275,14 @@ bool studioFromVar (const juce::var& v, StudioState& out, std::array<juce::Strin
                 s.drums = makeDefaultProject();
             if (const int b = bassIndex (t); b >= 0 && ! bassFromVar (o.getProperty ("state", {}), s.bass[(size_t) b]))
                 s.bass[(size_t) b] = makeDefaultBass();
+            if (const int l = looperIndex (t); l >= 0)
+            {
+                LoopFiles files;
+                if (! looperFromVar (o.getProperty ("state", {}), s.loopers[(size_t) l], files))
+                    s.loopers[(size_t) l] = makeDefaultLooper();
+                else if (loopFiles != nullptr)
+                    (*loopFiles)[(size_t) l] = files;
+            }
         }
     }
 
@@ -234,6 +292,11 @@ bool studioFromVar (const juce::var& v, StudioState& out, std::array<juce::Strin
     {
         b.bpm = s.bpm;
         b.swing = s.swing;
+    }
+    for (auto& l : s.loopers)
+    {
+        l.bpm = s.bpm;
+        l.swing = s.swing;
     }
     out = s;
     return true;

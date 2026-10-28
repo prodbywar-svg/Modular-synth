@@ -194,6 +194,14 @@ void applyToState (ProjectState& p, const Command& c)
         case CommandType::SetCable:
         case CommandType::SetKey:
         case CommandType::SetScale:
+        case CommandType::SetLoopInput:
+        case CommandType::SetLoopMonitor:
+        case CommandType::SetInputGain:
+        case CommandType::SetLoopBars:
+        case CommandType::SetSlice:
+        case CommandType::SetLoopAudio:
+        case CommandType::RecordLoop:
+        case CommandType::CancelLoopRecord:
             break;
     }
 }

@@ -31,13 +31,13 @@ The app opens two windows:
 
 - the **studio window**: PLAY / STOP / REC, EXPORT, SAVE / OPEN, tempo and swing,
   one row per tool, and the studio **MASTER** effects rack that every tool goes through;
-- a window for each **tool**: the **drum machine** and up to four **bass synths**.
-  A looper for your audio interface comes next.
+- a window for each **tool**: the **drum machine**, up to four **bass synths**
+  and up to four **loopers** for your audio interface.
 
 Each tool's row in the studio window shows its sound as a scrolling barcode, its
 **LEVEL**, **M** / **S** (mute / solo the whole tool), **OPEN** / **HIDE** for its
 window, and **REMOVE**, which takes it out of the project (it asks first).
-**+ BASS SYNTH** (and **+ DRUM MACHINE** once it has been removed) under the rows
+**+ BASS SYNTH**, **+ LOOPER** (and **+ DRUM MACHINE** once it has been removed) under the rows
 adds a fresh tool, already in time with the others. Closing a tool's window only
 hides it: it keeps playing.
 
@@ -122,6 +122,33 @@ Every sound also has CUTOFF, RESO, ENV AMT and F DECAY (a filter envelope),
 DRIVE, GLIDE, and a full ATTACK / DECAY / SUSTAIN / RELEASE envelope, drawn
 under the controls. Each row and the **BASS BUS** have the full effects rack.
 
+## The looper
+
+Records your audio interface into a loop that plays on the studio clock. It has
+four loop slots, **P1-P4**, that switch at the end of a bar like patterns do.
+
+| Do this | To |
+| --- | --- |
+| **INPUT** | pick **IN 1** or **IN 2** (on both sides) or **IN 1+2** (a stereo pair). **AUDIO DEVICE AND INPUTS...** in the same menu picks the interface and which of its inputs are 1 and 2 |
+| **MON** / `M` | hear the input through the looper's effects rack (use headphones, or turn it down, to avoid feedback) |
+| **2 BARS** | how long the slot's next recording is: 1, 2, 4 or 8 bars |
+| **REC LOOP** / `L` | record into the slot on screen from the next bar (from the start when the transport is stopped: it starts it). When the bars are done the loop plays straight away. Press again to cancel |
+| **OVERDUB** / `O` | record once round the loop on top of what is there, from the next bar |
+| `Ctrl+Z` | take off the last recording or overdub, one at a time (or undo a clear / paste / random) |
+| Click a slice step | mute it, or bring it back |
+| Drag a slice step up / down (or the mouse wheel) | make it play another slice of the bar (each bar of a loop is cut into 16). Changed steps show white, with the slice they play |
+| Right-click a slice step / **STRAIGHT** | play its own slice again / every step its own |
+| **RANDOM** / `Ctrl+R` | rearrange the slices: stutters, jumps back to a beat, the odd silence |
+| **COPY** / **PASTE** (`Ctrl+C` / `Ctrl+V`), `Shift`+click **P1-P4** | copy a slot (loop and slices) into another |
+| **CLEAR** / `Delete` | empty the slot on screen and reset the looper's rack |
+
+Loops are recorded before the effects rack, so the effects can change later, and
+are moved back by the audio device's latency (shown at the top right) so they
+land on the beat. A loop keeps its bars when the tempo changes, playing faster or
+slower. The looper's rack and its **IN GAIN**, **LEVEL** and **PAN** are in the panel under
+the rows. Saving a project writes each loop as a WAV file in a folder next to it
+(`<project> loops`).
+
 ### The kit
 
 Every drum comes in three characters:
@@ -184,12 +211,14 @@ one recorded step to the next, round the bar, without you touching it.
 
 Press **REC** (studio window, or `R` in any window), play: hit pads, mute tracks, move any control in any tool. Press **REC** or
 **STOP** to finish. The app stores what you *did*, not the audio, so the export
-can rebuild it perfectly, once for the master and once per track.
+can rebuild it perfectly, once for the master and once per track. With a looper
+in the studio it also keeps the audio input, so what you played into the loopers
+(monitored or recorded) is in the export too.
 
 **EXPORT** writes a folder containing:
 
 - `<name>_Master.wav`: the full mix after the studio master effects
-- `<name>_DRUMS.wav`, `<name>_BASS-1.wav`: each tool on its own (its own bus **and** its share of the
+- `<name>_DRUMS.wav`, `<name>_BASS-1.wav`, `<name>_LOOP-1.wav`: each tool on its own (its own bus **and** its share of the
   studio master effects)
 - `<name>_DRUMS-01-KICK.wav`, `<name>_BASS-1-04-ACID.wav`, ...: each track of a tool
   on its own, after its own effects, its tool's bus and its share of the master
@@ -238,7 +267,8 @@ node web/tests/parity.mjs <native_render>  # wasm output must match the native e
   `StudioState` (the tools, studio commands, save/open),
   `EngineCore` (the drum machine: sequencer, patterns, voices, mixer, drum bus),
   `BassEngine` / `BassVoice` / `BassState` (the bass synth: notes, scales, cut
-  groups, its 8 sounds), `Automation` (recorded effect moves), `Voice` (every drum voice
+  groups, its 8 sounds), `LooperEngine` / `LooperState` (the looper: loop slots,
+  bar-synced recording, slices), `Automation` (recorded effect moves), `Voice` (every drum voice
   in its three characters), `Hr16Bank` (the embedded HR-16 samples in
   `assets/hr16`), `FxChain` (effects rack) and `Effects` (grain delay, reverb,
   Psychosis, chorus), `OfflineRenderer` (take replay and WAV export),
@@ -246,7 +276,8 @@ node web/tests/parity.mjs <native_render>  # wasm output must match the native e
 - `Source/app`: `PluginProcessor` runs the engine on the audio thread, receives
   UI commands through a lock-free queue and records them with sample positions;
   `PluginEditor` is the studio window, which opens each tool's window
-  (`DrumMachineView`, `BassSynthView`); `SignalBox` draws the signal panels; `Shared` and `Widgets` hold what they share.
+  (`DrumMachineView`, `BassSynthView`, `LooperView`); `SignalBox` draws the signal panels; `Shared` and `Widgets` hold what they share;
+  `Standalone` reaches the standalone app's audio device (input, latency).
 - `web/wasm/WebEngine.cpp`: the engine as plain C functions for the browser.
   `web/site`: the page (`app.js`), the audio worklet that runs the engine
   (`worklet.js`) and the WAV reader/writer.

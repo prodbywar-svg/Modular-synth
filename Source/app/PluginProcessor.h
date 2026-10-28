@@ -18,7 +18,7 @@ public:
     static constexpr int kScopeLength = 4096;   // raw samples kept per track
 
     ModularSynthProcessor();
-    ~ModularSynthProcessor() override = default;
+    ~ModularSynthProcessor() override;
 
     // ---- message thread ----------------------------------------------------
     void send (const ms::Command&);
@@ -43,6 +43,38 @@ public:
     juce::String trackName (int track) const;
     // The same for any tool's track: "KICK", "ACID".
     juce::String trackName (int tool, int track) const;
+
+    // ---- loopers (message thread) -------------------------------------------
+    // Starts recording into a looper's slot from the next bar (with the
+    // transport stopped, from when PLAY is pressed): a new loop of the slot's
+    // bars, or with overdub on top of the one there.
+    void recordLoop (int tool, int slot, bool overdub);
+    void cancelLoopRecord (int tool);
+    // Puts the slot's audio back to before its last recording or change.
+    // Returns false when there is nothing to go back to.
+    bool undoLoopLayer (int tool, int slot);
+    int loopLayers (int tool, int slot) const;
+    // Sets a slot's audio (null empties it), remembering the old for undo.
+    void setLoopAudio (int tool, int slot, const ms::LoopAudio*);
+    // Keeps a loop alive while the caller holds it (undo, the clipboard).
+    std::shared_ptr<const ms::LoopAudio> holdLoop (const ms::LoopAudio*) const;
+    // Keeps what a take plays (loops, its input) alive while it is around.
+    void holdTake (ms::Take&) const;
+    // How late the input arrives after the sound it was played to, in
+    // samples: the recordings move back by this much.
+    void setInputLatency (int numSamples) { inputLatency = juce::jmax (0, numSamples); }
+    int getInputLatency() const { return inputLatency.load(); }
+    bool hasAudioInput() const { return getTotalNumInputChannels() > 0; }
+
+    struct LooperReadout
+    {
+        ms::LooperEngine::Status status = ms::LooperEngine::Status::Idle;
+        int slot = 0;
+        bool overdub = false;
+        double progress = 0.0; // of the recording, 0..1
+        double position = -1.0; // of the loop playing, 0..1, -1 = none
+    };
+    LooperReadout looperReadout (int tool) const;
 
     // Returns a recording once Record has been stopped.
     std::optional<ms::Take> takeFinishedRecording();
@@ -119,6 +151,15 @@ private:
     void recordEvent (const ms::Command&);
     void loadSamplePaths (ms::StudioState&, const std::array<juce::String, ms::kNumTracks>&, juce::String& error);
 
+    // loops: owned here, shared by pointer with the audio thread and takes
+    ms::LoopAudio* newLoop (int bars, const ms::LoopAudio* copyOf);
+    void pushLayer (int looper, int slot, const ms::LoopAudio* previous);
+    void collectLoops();
+    void topUpInputChunks();
+    bool anyLooper() const;
+    juce::var studioVarWithLoops (const juce::File& folder, bool relative);
+    void loadLoops (ms::StudioState&, const std::array<ms::LoopFiles, ms::kMaxLoopers>&, const juce::File& base, juce::String& error);
+
     ms::StudioEngine engine;
 
     // UI -> audio queue
@@ -130,6 +171,37 @@ private:
     juce::var windowLayout;
     int windowLayoutVersion = 0;
     std::vector<std::unique_ptr<ms::SampleData>> samples;
+
+    struct HeldLoop
+    {
+        std::shared_ptr<ms::LoopAudio> audio;
+        juce::uint32 lastUsed = 0;
+    };
+    std::vector<HeldLoop> loops;
+    juce::uint32 lastCollect = 0;
+    static constexpr size_t kMaxLayers = 16;
+    std::array<std::array<std::vector<std::shared_ptr<const ms::LoopAudio>>, ms::kNumPatterns>, ms::kMaxLoopers> layers;
+    std::atomic<int> inputLatency { 0 };
+
+    // finished loop recordings, audio -> message thread
+    struct FinishedLoop
+    {
+        int looper = 0, slot = 0;
+        ms::LoopAudio* audio = nullptr;
+    };
+    juce::AbstractFifo finishedFifo { 64 };
+    std::array<FinishedLoop, 64> finishedLoops {};
+    std::array<int, ms::kMaxLoopers> finishedSeen {}; // audio thread
+
+    // the input of takes: chunks made here, used up by the audio thread
+    juce::AbstractFifo chunkFifo { 32 };
+    std::array<float*, 32> chunkSlots {};
+    float* takeChunk(); // audio thread
+    std::shared_ptr<ms::InputRecording> pendingInput;
+    std::atomic<ms::InputRecording*> nextInput { nullptr };
+    std::vector<std::shared_ptr<ms::InputRecording>> inputs; // ones the audio thread has had
+    ms::InputRecording* takeInput = nullptr;                  // audio thread: the take's, while recording
+    std::atomic<const ms::InputRecording*> recordingInput { nullptr };
 
     // recording: two takes so a new recording never overwrites one the UI is
     // still collecting
@@ -148,6 +220,10 @@ private:
     std::atomic<double> stepPositionValue { 0.0 };
     bool autoArmed = false; // message thread
     std::array<std::atomic<int>, ms::kNumToolSlots> currentPatterns {}, queuedPatterns {};
+    std::array<std::atomic<int>, ms::kMaxLoopers> looperStatus {}, looperSlot {};
+    std::array<std::atomic<bool>, ms::kMaxLoopers> looperOverdub {};
+    std::array<std::atomic<double>, ms::kMaxLoopers> looperProgress {}, looperPosition {};
+    std::array<std::atomic<const ms::LoopAudio*>, ms::kMaxLoopers> recordingLoops {};
     std::atomic<std::int64_t> recordedSampleCount { 0 }, playedSampleCount { 0 };
     std::atomic<float> masterPeakValue { 0.0f };
     std::array<std::atomic<float>, ms::kNumToolSlots> toolPeaks {}, busPeaks {};

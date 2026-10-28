@@ -449,6 +449,14 @@ void applyToBass (BassState& b, const Command& c)
         case CommandType::RemoveTool:
         case CommandType::SetToolMute:
         case CommandType::SetToolSolo:
+        case CommandType::SetLoopInput:
+        case CommandType::SetLoopMonitor:
+        case CommandType::SetInputGain:
+        case CommandType::SetLoopBars:
+        case CommandType::SetSlice:
+        case CommandType::SetLoopAudio:
+        case CommandType::RecordLoop:
+        case CommandType::CancelLoopRecord:
             break;
     }
 }

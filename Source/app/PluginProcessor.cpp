@@ -20,14 +20,29 @@ int padForNote (int note)
 } // namespace
 
 ModularSynthProcessor::ModularSynthProcessor()
-    : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true))
+    : AudioProcessor (BusesProperties()
+                          .withInput ("Input", juce::AudioChannelSet::stereo(), true)
+                          .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
 {
     loadHr16Bank();
-    static_assert (kNumTracks <= kLanesPerTool && kBassRows <= kLanesPerTool);
+    static_assert (kNumTracks <= kLanesPerTool && kBassRows <= kLanesPerTool && kLooperTracks <= kLanesPerTool);
     for (auto& q : queuedPatterns)
         q = -1;
+    for (auto& p : looperPosition)
+        p = -1.0;
     for (auto& t : takes)
         t.events.reserve (kMaxRecordedEvents);
+    engine.setRecordsInput (true);
+}
+
+ModularSynthProcessor::~ModularSynthProcessor()
+{
+    // chunks the audio thread never took
+    const auto scope = chunkFifo.read (chunkFifo.getNumReady());
+    for (int i = 0; i < scope.blockSize1; ++i)
+        delete[] chunkSlots[(size_t) (scope.startIndex1 + i)];
+    for (int i = 0; i < scope.blockSize2; ++i)
+        delete[] chunkSlots[(size_t) (scope.startIndex2 + i)];
 }
 
 // ---- message thread ---------------------------------------------------------
@@ -130,6 +145,37 @@ void ModularSynthProcessor::replaceStudio (const StudioState& s)
             cmd (CommandType::SetFxParam, tool, -1, i, bass.masterFx[(size_t) i]);
     }
 
+    for (int l = 0; l < kMaxLoopers; ++l)
+    {
+        const int tool = kFirstLooperTool + l;
+        if (! s.tools[(size_t) tool].active)
+            continue;
+        const auto& looper = s.loopers[(size_t) l];
+        cmd (CommandType::CancelLoopRecord, tool, 0, 0, 0.0f);
+        cmd (CommandType::SetLoopInput, tool, 0, (int) looper.input, 0.0f);
+        cmd (CommandType::SetLoopMonitor, tool, 0, 0, looper.monitor ? 1.0f : 0.0f);
+        cmd (CommandType::SetInputGain, tool, 0, 0, looper.inputGain);
+        cmd (CommandType::SetMasterLevel, tool, 0, 0, looper.masterLevel);
+        cmd (CommandType::SetPan, tool, 0, 0, looper.pan);
+        for (int i = 0; i < kNumFxParams; ++i)
+            cmd (CommandType::SetFxParam, tool, -1, i, looper.masterFx[(size_t) i]);
+        for (int slot = 0; slot < kNumPatterns; ++slot)
+        {
+            const auto& ls = looper.slots[(size_t) slot];
+            cmd (CommandType::SetLoopBars, tool, 0, slot, (float) ls.bars);
+            for (int st = 0; st < kNumSteps; ++st)
+                cmd (CommandType::SetSlice, tool, 0, slot * kNumSteps + st, (float) ls.slices[(size_t) st]);
+            Command c;
+            c.type = CommandType::SetLoopAudio;
+            c.tool = tool;
+            c.index = slot;
+            c.loop = const_cast<LoopAudio*> (ls.audio); // never written to through this
+            send (c);
+            layers[(size_t) l][(size_t) slot].clear();
+        }
+        cmd (CommandType::SelectPattern, tool, 0, looper.pattern, 0.0f);
+    }
+
     // effect automation: clear every rack, then send each recorded point
     auto automation = [&cmd] (int tool, int rack, const FxAutomation& a) {
         for (int pat = 0; pat < kNumPatterns; ++pat)
@@ -156,6 +202,14 @@ void ModularSynthProcessor::replaceStudio (const StudioState& s)
         automation (tool, -1, s.bass[(size_t) b].masterFxAuto);
         for (int r = 0; r < kBassRows; ++r)
             automation (tool, r, s.bass[(size_t) b].rows[(size_t) r].fxAuto);
+    }
+    for (int l = 0; l < kMaxLoopers; ++l)
+    {
+        const int tool = kFirstLooperTool + l;
+        if (! s.tools[(size_t) tool].active)
+            continue;
+        cmd (CommandType::ClearFxAuto, tool, -1, -1, -1.0f);
+        automation (tool, -1, s.loopers[(size_t) l].masterFxAuto);
     }
 
     cmd (CommandType::SetBpm, kStudio, 0, 0, s.bpm);
@@ -205,10 +259,105 @@ const SampleData* ModularSynthProcessor::loadSample (const juce::File& file, juc
 
 bool ModularSynthProcessor::saveProject (const juce::File& file)
 {
-    auto v = studioToVar (uiState);
+    // the loops go in a folder beside the project, named after it
+    auto v = studioVarWithLoops (file.getSiblingFile (file.getFileNameWithoutExtension() + " loops"), true);
     if (auto* o = v.getDynamicObject())
         o->setProperty ("windows", windowLayout);
     return file.replaceWithText (juce::JSON::toString (v));
+}
+
+namespace
+{
+bool writeLoop (const LoopAudio& audio, const juce::File& file)
+{
+    file.deleteFile();
+    std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (file);
+    if (static_cast<juce::FileOutputStream*> (stream.get())->failedToOpen())
+        return false;
+    juce::WavAudioFormat wav;
+    // 32-bit float: overdubs can go past full scale without clipping
+    auto writer = wav.createWriterFor (stream, juce::AudioFormatWriterOptions {}
+                                                   .withSampleRate (audio.sampleRate)
+                                                   .withNumChannels (2)
+                                                   .withBitsPerSample (32)
+                                                   .withSampleFormat (juce::AudioFormatWriterOptions::SampleFormat::floatingPoint));
+    if (writer == nullptr)
+        return false;
+    const float* chans[] = { audio.left.data(), audio.right.data() };
+    return writer->writeFromFloatArrays (chans, 2, audio.length);
+}
+} // namespace
+
+juce::var ModularSynthProcessor::studioVarWithLoops (const juce::File& folder, bool relative)
+{
+    std::array<LoopFiles, kMaxLoopers> files;
+    std::vector<const LoopAudio*> written;
+    for (int l = 0; l < kMaxLoopers; ++l)
+    {
+        const int tool = kFirstLooperTool + l;
+        if (! uiState.tools[(size_t) tool].active)
+            continue;
+        for (int slot = 0; slot < kNumPatterns; ++slot)
+        {
+            const auto* audio = uiState.loopers[(size_t) l].slots[(size_t) slot].audio;
+            if (audio == nullptr || audio->length <= 0)
+                continue;
+            auto* held = const_cast<LoopAudio*> (audio); // only its file name changes
+            auto file = folder.getChildFile (juce::String (toolName (tool)) + "-P" + juce::String (slot + 1) + ".wav");
+            // a session save keeps a loop's file once it has one
+            if (! relative && held->file.isNotEmpty() && juce::File (held->file).existsAsFile())
+                file = juce::File (held->file);
+            else if (std::find (written.begin(), written.end(), audio) == written.end())
+            {
+                folder.createDirectory();
+                if (! writeLoop (*audio, file))
+                    continue;
+                held->file = file.getFullPathName();
+                written.push_back (audio);
+            }
+            else
+                file = juce::File (held->file);
+            files[(size_t) l][(size_t) slot].file = relative ? folder.getFileName() + "/" + file.getFileName() : file.getFullPathName();
+        }
+    }
+    return studioToVar (uiState, files);
+}
+
+void ModularSynthProcessor::loadLoops (StudioState& s, const std::array<LoopFiles, kMaxLoopers>& files, const juce::File& base,
+                                       juce::String& error)
+{
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    for (int l = 0; l < kMaxLoopers; ++l)
+    {
+        for (int slot = 0; slot < kNumPatterns; ++slot)
+        {
+            const auto& f = files[(size_t) l][(size_t) slot];
+            if (f.file.isEmpty())
+                continue;
+            const auto file = juce::File::isAbsolutePath (f.file) ? juce::File (f.file) : base.getChildFile (f.file);
+            std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
+            if (reader == nullptr || reader->lengthInSamples <= 1)
+            {
+                error = "Missing loop: " + file.getFullPathName();
+                continue;
+            }
+            constexpr juce::int64 maxSamples = 48000 * 60 * 4;
+            const auto length = (int) juce::jmin (reader->lengthInSamples, maxSamples);
+            auto* audio = newLoop (f.bars, nullptr);
+            audio->left.assign ((size_t) length, 0.0f);
+            audio->right.assign ((size_t) length, 0.0f);
+            float* chans[] = { audio->left.data(), audio->right.data() };
+            reader->read (chans, reader->numChannels > 1 ? 2 : 1, 0, length);
+            if (reader->numChannels < 2)
+                audio->right = audio->left;
+            audio->length = length;
+            audio->bpm = f.bpm;
+            audio->sampleRate = reader->sampleRate;
+            audio->file = file.getFullPathName();
+            s.loopers[(size_t) l].slots[(size_t) slot].audio = audio;
+        }
+    }
 }
 
 void ModularSynthProcessor::loadSamplePaths (StudioState& s, const std::array<juce::String, kNumTracks>& paths, juce::String& error)
@@ -230,13 +379,15 @@ bool ModularSynthProcessor::openProject (const juce::File& file, juce::String& e
     const auto v = juce::JSON::parse (file);
     StudioState s;
     std::array<juce::String, kNumTracks> paths;
-    if (! studioFromVar (v, s, paths))
+    std::array<LoopFiles, kMaxLoopers> loopFiles;
+    if (! studioFromVar (v, s, paths, &loopFiles))
     {
         error = file.getFileName() + " is not a Modular-synth project";
         return false;
     }
 
     loadSamplePaths (s, paths, error);
+    loadLoops (s, loopFiles, file.getParentDirectory(), error);
     replaceStudio (s);
     windowLayout = v.getProperty ("windows", {});
     ++windowLayoutVersion;
@@ -255,7 +406,232 @@ juce::String ModularSynthProcessor::trackName (int tool, int track) const
 {
     if (const int b = bassIndex (tool); b >= 0)
         return bassSoundName (uiState.bass[(size_t) b].rows[(size_t) track].sound);
+    if (looperIndex (tool) >= 0)
+        return track == kInputTrack ? "INPUT" : "LOOP";
     return trackName (track);
+}
+
+// ---- loopers --------------------------------------------------------------------
+
+LoopAudio* ModularSynthProcessor::newLoop (int bars, const LoopAudio* copyOf)
+{
+    auto audio = std::make_shared<LoopAudio>();
+    if (copyOf != nullptr)
+    {
+        audio->left = copyOf->left;
+        audio->right = copyOf->right;
+        audio->length = copyOf->length;
+        audio->bars = copyOf->bars;
+        audio->bpm = copyOf->bpm;
+        audio->sampleRate = copyOf->sampleRate;
+    }
+    else
+    {
+        audio->bars = bars;
+        audio->bpm = uiState.bpm;
+        audio->sampleRate = getEngineSampleRate();
+    }
+    loops.push_back ({ audio, juce::Time::getMillisecondCounter() });
+    return audio.get();
+}
+
+std::shared_ptr<const LoopAudio> ModularSynthProcessor::holdLoop (const LoopAudio* audio) const
+{
+    for (const auto& h : loops)
+        if (h.audio.get() == audio)
+            return h.audio;
+    return {};
+}
+
+void ModularSynthProcessor::holdTake (Take& take) const
+{
+    take.held.clear();
+    auto hold = [this, &take] (const LoopAudio* audio) {
+        if (audio != nullptr)
+            if (auto h = holdLoop (audio))
+                take.held.push_back (h);
+    };
+    for (const auto& l : take.start.loopers)
+        for (const auto& slot : l.slots)
+            hold (slot.audio);
+    for (const auto& e : take.events)
+        hold (e.command.loop);
+    if (take.input != nullptr)
+        for (const auto& in : inputs)
+            if (in.get() == take.input)
+                take.held.push_back (in);
+}
+
+bool ModularSynthProcessor::anyLooper() const
+{
+    for (int l = 0; l < kMaxLoopers; ++l)
+        if (uiState.tools[(size_t) (kFirstLooperTool + l)].active)
+            return true;
+    return false;
+}
+
+void ModularSynthProcessor::recordLoop (int tool, int slot, bool overdub)
+{
+    const int l = looperIndex (tool);
+    if (l < 0 || slot < 0 || slot >= kNumPatterns)
+        return;
+    const auto& ls = uiState.loopers[(size_t) l].slots[(size_t) slot];
+    const bool onTop = overdub && ls.audio != nullptr && ls.audio->length > 0;
+    LoopAudio* audio = nullptr;
+    if (onTop)
+    {
+        audio = newLoop (0, ls.audio);
+    }
+    else
+    {
+        // room for the bars at this tempo, and some to spare in case it slows
+        audio = newLoop (ls.bars, nullptr);
+        const double stepLen = audio->sampleRate * 60.0 / (double) uiState.bpm / 4.0;
+        const auto room = (size_t) (stepLen * kNumSteps * ls.bars * 1.25) + (size_t) inputLatency.load() + 1024;
+        audio->left.assign (room, 0.0f);
+        audio->right.assign (room, 0.0f);
+    }
+    Command c;
+    c.type = CommandType::RecordLoop;
+    c.tool = tool;
+    c.index = slot;
+    c.value = onTop ? 1.0f : 0.0f;
+    c.loop = audio;
+    send (c);
+    recordingLoops[(size_t) l] = audio; // until the audio thread says otherwise
+}
+
+void ModularSynthProcessor::cancelLoopRecord (int tool)
+{
+    Command c;
+    c.type = CommandType::CancelLoopRecord;
+    c.tool = tool;
+    send (c);
+}
+
+void ModularSynthProcessor::pushLayer (int looper, int slot, const LoopAudio* previous)
+{
+    auto& stack = layers[(size_t) looper][(size_t) slot];
+    stack.push_back (holdLoop (previous)); // null = it was empty
+    if (stack.size() > kMaxLayers)
+        stack.erase (stack.begin());
+}
+
+void ModularSynthProcessor::setLoopAudio (int tool, int slot, const LoopAudio* audio)
+{
+    const int l = looperIndex (tool);
+    if (l < 0 || slot < 0 || slot >= kNumPatterns)
+        return;
+    const auto* was = uiState.loopers[(size_t) l].slots[(size_t) slot].audio;
+    if (was == audio)
+        return;
+    pushLayer (l, slot, was);
+    Command c;
+    c.type = CommandType::SetLoopAudio;
+    c.tool = tool;
+    c.index = slot;
+    c.loop = const_cast<LoopAudio*> (audio);
+    send (c);
+}
+
+bool ModularSynthProcessor::undoLoopLayer (int tool, int slot)
+{
+    const int l = looperIndex (tool);
+    if (l < 0 || slot < 0 || slot >= kNumPatterns || layers[(size_t) l][(size_t) slot].empty())
+        return false;
+    auto& stack = layers[(size_t) l][(size_t) slot];
+    const auto previous = stack.back();
+    stack.pop_back();
+    Command c;
+    c.type = CommandType::SetLoopAudio;
+    c.tool = tool;
+    c.index = slot;
+    c.loop = const_cast<LoopAudio*> (previous.get());
+    send (c);
+    return true;
+}
+
+int ModularSynthProcessor::loopLayers (int tool, int slot) const
+{
+    const int l = looperIndex (tool);
+    return l < 0 || slot < 0 || slot >= kNumPatterns ? 0 : (int) layers[(size_t) l][(size_t) slot].size();
+}
+
+ModularSynthProcessor::LooperReadout ModularSynthProcessor::looperReadout (int tool) const
+{
+    LooperReadout r;
+    const int l = looperIndex (tool);
+    if (l < 0)
+        return r;
+    r.status = (LooperEngine::Status) looperStatus[(size_t) l].load();
+    r.slot = looperSlot[(size_t) l].load();
+    r.overdub = looperOverdub[(size_t) l].load();
+    r.progress = looperProgress[(size_t) l].load();
+    r.position = looperPosition[(size_t) l].load();
+    return r;
+}
+
+void ModularSynthProcessor::collectLoops()
+{
+    // A loop nothing refers to any more (the studio, undo, a take, a
+    // recording) is let go once the audio thread has surely moved on from it.
+    const auto now = juce::Time::getMillisecondCounter();
+    for (auto& h : loops)
+    {
+        bool used = h.audio.use_count() > 1;
+        for (const auto& l : uiState.loopers)
+            for (const auto& slot : l.slots)
+                used = used || slot.audio == h.audio.get();
+        for (const auto& r : recordingLoops)
+            used = used || r.load() == h.audio.get();
+        if (used)
+            h.lastUsed = now;
+    }
+    loops.erase (std::remove_if (loops.begin(), loops.end(), [now] (const HeldLoop& h) { return now - h.lastUsed > 10000; }),
+                 loops.end());
+
+    // the newest two may belong to a take not collected yet
+    for (size_t i = 0; i + 2 < inputs.size();)
+    {
+        if (inputs[i].use_count() == 1 && inputs[i].get() != recordingInput.load())
+            inputs.erase (inputs.begin() + (std::ptrdiff_t) i);
+        else
+            ++i;
+    }
+}
+
+void ModularSynthProcessor::topUpInputChunks()
+{
+    if (nextInput.load() == nullptr && pendingInput != nullptr)
+        inputs.push_back (std::move (pendingInput)); // the audio thread took it
+    if (! anyLooper())
+        return;
+    // a take's input recording waiting for the next REC
+    if (pendingInput == nullptr)
+    {
+        pendingInput = std::make_shared<InputRecording>();
+        nextInput = pendingInput.get();
+    }
+    // and chunks for it to fill: well over ten seconds ahead
+    const int free = chunkFifo.getFreeSpace();
+    if (free > 16)
+    {
+        const auto scope = chunkFifo.write (free - 16);
+        for (int i = 0; i < scope.blockSize1; ++i)
+            chunkSlots[(size_t) (scope.startIndex1 + i)] = InputRecording::makeChunk();
+        for (int i = 0; i < scope.blockSize2; ++i)
+            chunkSlots[(size_t) (scope.startIndex2 + i)] = InputRecording::makeChunk();
+    }
+}
+
+float* ModularSynthProcessor::takeChunk()
+{
+    const auto scope = chunkFifo.read (1);
+    if (scope.blockSize1 > 0)
+        return chunkSlots[(size_t) scope.startIndex1];
+    if (scope.blockSize2 > 0)
+        return chunkSlots[(size_t) scope.startIndex2];
+    return nullptr;
 }
 
 std::optional<Take> ModularSynthProcessor::takeFinishedRecording()
@@ -265,6 +641,7 @@ std::optional<Take> ModularSynthProcessor::takeFinishedRecording()
         return std::nullopt;
 
     lastTake = takes[(size_t) index];
+    holdTake (*lastTake);
     return lastTake;
 }
 
@@ -282,6 +659,31 @@ void ModularSynthProcessor::syncPatternFromEngine()
     sync (kDrumTool, uiState.drums.pattern, uiState.drums.queuedPattern);
     for (int b = 0; b < kMaxBassSynths; ++b)
         sync (kFirstBassTool + b, uiState.bass[(size_t) b].pattern, uiState.bass[(size_t) b].queuedPattern);
+    for (int l = 0; l < kMaxLoopers; ++l)
+        sync (kFirstLooperTool + l, uiState.loopers[(size_t) l].pattern, uiState.loopers[(size_t) l].queuedPattern);
+
+    // loops whose recording finished: the slot now plays them
+    const auto scope = finishedFifo.read (finishedFifo.getNumReady());
+    auto take = [this] (const FinishedLoop& f) {
+        auto& slot = uiState.loopers[(size_t) f.looper].slots[(size_t) f.slot];
+        if (slot.audio != f.audio)
+        {
+            pushLayer (f.looper, f.slot, slot.audio);
+            slot.audio = f.audio;
+        }
+    };
+    for (int i = 0; i < scope.blockSize1; ++i)
+        take (finishedLoops[(size_t) (scope.startIndex1 + i)]);
+    for (int i = 0; i < scope.blockSize2; ++i)
+        take (finishedLoops[(size_t) (scope.startIndex2 + i)]);
+
+    topUpInputChunks();
+    const auto now = juce::Time::getMillisecondCounter();
+    if (now - lastCollect > 1000)
+    {
+        lastCollect = now;
+        collectLoops();
+    }
 }
 
 float ModularSynthProcessor::toolHistory (int tool, int age) const
@@ -317,7 +719,9 @@ void ModularSynthProcessor::prepareToPlay (double sampleRate, int)
 
 bool ModularSynthProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
-    return layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo();
+    const auto in = layouts.getMainInputChannelSet();
+    return layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo()
+        && (in.isDisabled() || in == juce::AudioChannelSet::mono() || in == juce::AudioChannelSet::stereo());
 }
 
 void ModularSynthProcessor::recordEvent (const Command& c)
@@ -342,6 +746,8 @@ void ModularSynthProcessor::finishRecording()
         return;
 
     recording = false;
+    takeInput = nullptr;
+    recordingInput = nullptr;
     takes[(size_t) writeTake].length = recordPosition;
     finishedTake = writeTake;
     writeTake = 1 - writeTake;
@@ -362,6 +768,23 @@ void ModularSynthProcessor::handleOnAudioThread (const Command& c)
     }
     else if (c.type == CommandType::RecordStart)
     {
+        // loopers waiting for the bar to record go on waiting in the take
+        std::array<Command, kMaxLoopers> waiting;
+        int numWaiting = 0;
+        for (int l = 0; l < kMaxLoopers; ++l)
+        {
+            const auto& looper = engine.looper (l);
+            if (looper.status() != LooperEngine::Status::Waiting)
+                continue;
+            auto& w = waiting[(size_t) numWaiting++];
+            w.type = CommandType::RecordLoop;
+            w.tool = kFirstLooperTool + l;
+            w.index = looper.recordSlot();
+            w.value = looper.recordOverdub() ? 1.0f : 0.0f;
+            w.loop = looper.recordBuffer();
+            w.track = looper.recordLatency();
+        }
+
         finishRecording();
         // Start from silence at step 1, exactly like the offline export will.
         engine.setPlaying (false);
@@ -374,8 +797,24 @@ void ModularSynthProcessor::handleOnAudioThread (const Command& c)
         recordPosition = 0;
         recordedEventCount = 0;
         playedSampleCount = 0;
+        // the input goes with the take when there is somewhere to keep it
+        takeInput = nextInput.exchange (nullptr);
+        take.input = takeInput;
+        recordingInput = takeInput;
         recording = true;
         engine.setPlaying (true);
+        for (int i = 0; i < numWaiting; ++i)
+        {
+            engine.apply (waiting[(size_t) i]);
+            recordEvent (waiting[(size_t) i]);
+        }
+    }
+    else if (c.type == CommandType::RecordLoop)
+    {
+        auto withLatency = c;
+        withLatency.track = inputLatency.load();
+        engine.apply (withLatency);
+        recordEvent (withLatency);
     }
     else
     {
@@ -417,15 +856,27 @@ void ModularSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
 
     // 3. audio, in history-sized chunks so the barcodes have a steady clock
     const int numSamples = buffer.getNumSamples();
+    const int numInputs = getTotalNumInputChannels();
     float* left = buffer.getWritePointer (0);
     float* right = buffer.getNumChannels() > 1 ? buffer.getWritePointer (1) : nullptr;
-    std::array<float, kHistoryWindow> scratch {};
+    std::array<float, kHistoryWindow> scratch {}, inLeft {}, inRight {};
     float blockMasterPeak = 0.0f;
     busBlockPeak.fill (0.0f);
 
     for (int offset = 0; offset < numSamples;)
     {
         const int n = juce::jmin (kHistoryWindow - windowFill, numSamples - offset);
+
+        // the input shares the buffer with the output, so it is read first
+        if (numInputs > 0)
+        {
+            std::copy (buffer.getReadPointer (0) + offset, buffer.getReadPointer (0) + offset + n, inLeft.data());
+            const int second = numInputs > 1 ? 1 : 0;
+            std::copy (buffer.getReadPointer (second) + offset, buffer.getReadPointer (second) + offset + n, inRight.data());
+            engine.setInput (inLeft.data(), inRight.data());
+            if (recording && takeInput != nullptr)
+                takeInput->append (inLeft.data(), inRight.data(), n, [this] { return takeChunk(); });
+        }
         engine.process (left + offset, right != nullptr ? right + offset : scratch.data(), n);
         offset += n;
         windowFill += n;
@@ -440,7 +891,7 @@ void ModularSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
                 continue;
             busBlockPeak[(size_t) tool] = juce::jmax (busBlockPeak[(size_t) tool], engine.busPeak (tool));
 
-            const int tracks = toolKind (tool) == ToolKind::Drums ? kNumTracks : kBassRows;
+            const int tracks = toolTracks (tool);
             for (int t = 0; t < tracks; ++t)
             {
                 const auto l = (size_t) lane (tool, t);
@@ -492,6 +943,26 @@ void ModularSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
         currentPatterns[(size_t) tool] = engine.toolPattern (tool);
         queuedPatterns[(size_t) tool] = engine.toolQueuedPattern (tool);
     }
+    for (int l = 0; l < kMaxLoopers; ++l)
+    {
+        const auto& looper = engine.looper (l);
+        looperStatus[(size_t) l] = (int) looper.status();
+        looperSlot[(size_t) l] = looper.recordSlot();
+        looperOverdub[(size_t) l] = looper.recordOverdub();
+        looperProgress[(size_t) l] = looper.recordProgress();
+        looperPosition[(size_t) l] = looper.loopPosition();
+        recordingLoops[(size_t) l] = looper.recordBuffer();
+        if (looper.finishedCount() != finishedSeen[(size_t) l])
+        {
+            finishedSeen[(size_t) l] = looper.finishedCount();
+            const auto w = finishedFifo.write (1);
+            const FinishedLoop f { l, looper.lastFinishedSlot(), looper.lastFinishedAudio() };
+            if (w.blockSize1 > 0)
+                finishedLoops[(size_t) w.startIndex1] = f;
+            else if (w.blockSize2 > 0)
+                finishedLoops[(size_t) w.startIndex2] = f;
+        }
+    }
     playingFlag = engine.isPlaying();
     recordingFlag = recording;
     stepIndex = engine.currentStep();
@@ -508,7 +979,11 @@ juce::AudioProcessorEditor* ModularSynthProcessor::createEditor()
 
 void ModularSynthProcessor::getStateInformation (juce::MemoryBlock& dest)
 {
-    auto v = studioToVar (uiState);
+    // loops wait for the next session in the app's own folder
+    const auto folder = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+                            .getChildFile ("Modular-synth")
+                            .getChildFile ("Session loops");
+    auto v = studioVarWithLoops (folder, false);
     if (auto* o = v.getDynamicObject())
         o->setProperty ("windows", windowLayout);
     const auto json = juce::JSON::toString (v);
@@ -520,11 +995,13 @@ void ModularSynthProcessor::setStateInformation (const void* data, int size)
     const auto v = juce::JSON::parse (juce::String::fromUTF8 ((const char*) data, size));
     StudioState s;
     std::array<juce::String, kNumTracks> paths;
-    if (! studioFromVar (v, s, paths))
+    std::array<LoopFiles, kMaxLoopers> loopFiles;
+    if (! studioFromVar (v, s, paths, &loopFiles))
         return;
 
     juce::String error;
     loadSamplePaths (s, paths, error);
+    loadLoops (s, loopFiles, {}, error);
     replaceStudio (s);
     windowLayout = v.getProperty ("windows", {});
     ++windowLayoutVersion;
