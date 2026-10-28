@@ -2,9 +2,12 @@
 
 #include "ProjectState.h"
 
-#include <BinaryData.h>
-#include <juce_audio_formats/juce_audio_formats.h>
+#if ! MS_NO_JUCE
+ #include <BinaryData.h>
+ #include <juce_audio_formats/juce_audio_formats.h>
+#endif
 
+#include <array>
 #include <mutex>
 
 namespace ms
@@ -44,6 +47,7 @@ Group groupFor (VoiceType t)
 
 constexpr int kNumFiles = 56;
 std::array<SampleData, kNumFiles + 1> bank; // indexed by file number
+#if ! MS_NO_JUCE
 std::once_flag loaded;
 
 void decodeAll()
@@ -76,6 +80,7 @@ void decodeAll()
                 s.samples[(size_t) i] += buffer.getSample (ch, i) * scale;
     }
 }
+#endif
 } // namespace
 
 int hr16SoundCount (VoiceType t)
@@ -89,10 +94,24 @@ int hr16FileNumber (VoiceType t, int index)
     return index >= 0 && index < g.count ? g.files[index] : 0;
 }
 
+#if MS_NO_JUCE
+void loadHr16Bank() {}
+
+void setHr16File (int n, const float* samples, int length, double sampleRate)
+{
+    if (n < 1 || n > kNumFiles || length < 0)
+        return;
+    auto& s = bank[(size_t) n];
+    s.sampleRate = sampleRate;
+    s.path = "HR16 #" + std::string (n < 10 ? "0" : "") + std::to_string (n);
+    s.samples.assign (samples, samples + length);
+}
+#else
 void loadHr16Bank()
 {
     std::call_once (loaded, decodeAll);
 }
+#endif
 
 const SampleData* hr16Sample (VoiceType t, int index)
 {

@@ -2,7 +2,13 @@
 
 #include "Params.h"
 
-#include <juce_core/juce_core.h>
+// MS_NO_JUCE builds the engine without JUCE (the browser version).
+#if MS_NO_JUCE
+ #include <string>
+ #include <vector>
+#else
+ #include <juce_core/juce_core.h>
+#endif
 
 #include <cstdint>
 
@@ -14,7 +20,11 @@ struct SampleData
 {
     std::vector<float> samples;
     double sampleRate = 44100.0;
+#if MS_NO_JUCE
+    std::string path;
+#else
     juce::String path;
+#endif
 };
 
 using Pattern = std::array<float, kNumSteps>; // velocity per step, 0 = off
@@ -101,9 +111,11 @@ bool isTransport (CommandType);
 // Applies a state-changing command. Trigger and transport commands are ignored.
 void applyToState (ProjectState&, const Command&);
 
+#if ! MS_NO_JUCE
 // ---- save / open ------------------------------------------------------------
 juce::var projectToVar (const ProjectState&);
 // Sample paths are returned so the caller can load them; sample pointers in the
 // returned state are null.
 bool projectFromVar (const juce::var&, ProjectState&, std::array<juce::String, kNumTracks>& samplePaths);
+#endif
 } // namespace ms
