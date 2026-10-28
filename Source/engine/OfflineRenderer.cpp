@@ -82,6 +82,11 @@ Take makePatternTake (const StudioState& state, int loops, double sampleRate, in
     t.start = state;
     t.start.drums.pattern = pattern >= 0 ? pattern : viewedPattern (state.drums);
     t.start.drums.queuedPattern = -1;
+    for (auto& b : t.start.bass)
+    {
+        b.pattern = viewedPattern (b);
+        b.queuedPattern = -1;
+    }
     t.sampleRate = sampleRate;
     const double stepLen = sampleRate * 60.0 / (double) state.bpm / 4.0;
     t.length = (std::int64_t) std::llround (stepLen * kNumSteps * std::max (1, loops));
@@ -142,6 +147,12 @@ ExportResult exportTake (const Take& take, const ExportOptions& opt,
                                                                           : juce::String (drumName (tr.voice, tr.character));
                 stems.push_back ({ { tool, t }, toolPart + "-" + juce::String (t + 1).paddedLeft ('0', 2) + "-" + safeName (name) });
             }
+        }
+        else if (const int b = bassIndex (tool); b >= 0)
+        {
+            for (int r = 0; r < kBassRows; ++r)
+                stems.push_back ({ { tool, r }, toolPart + "-" + juce::String (r + 1).paddedLeft ('0', 2) + "-"
+                                                    + safeName (bassSoundName (take.start.bass[(size_t) b].rows[(size_t) r].sound)) });
         }
     }
 

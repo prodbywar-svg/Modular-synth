@@ -175,6 +175,12 @@ void applyToState (ProjectState& p, const Command& c)
         case CommandType::RemoveTool:
         case CommandType::SetToolMute:
         case CommandType::SetToolSolo:
+        case CommandType::NoteOff:
+        case CommandType::SetNote:
+        case CommandType::SetLength:
+        case CommandType::SetCable:
+        case CommandType::SetKey:
+        case CommandType::SetScale:
             break;
     }
 }

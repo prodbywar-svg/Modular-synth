@@ -19,7 +19,7 @@ juce::LookAndFeel& sharedLookAndFeel();
 
 // The effects rack's controls, the same on every track, bus and the studio
 // master, in four columns: CRUSH > DISTORT > FILTER, DELAY > REVERB,
-// GRAIN DELAY, PSYCHOSIS.
+// GRAIN DELAY, CHORUS + PSYCHOSIS.
 class FxRackControls
 {
 public:

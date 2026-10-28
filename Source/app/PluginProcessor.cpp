@@ -23,6 +23,9 @@ ModularSynthProcessor::ModularSynthProcessor()
     : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true))
 {
     loadHr16Bank();
+    static_assert (kNumTracks <= kLanesPerTool && kBassRows <= kLanesPerTool);
+    for (auto& q : queuedPatterns)
+        q = -1;
     for (auto& t : takes)
         t.events.reserve (kMaxRecordedEvents);
 }
@@ -88,6 +91,44 @@ void ModularSynthProcessor::replaceStudio (const StudioState& s)
     cmd (CommandType::SetMasterLevel, kDrumTool, 0, 0, p.masterLevel);
     for (int i = 0; i < kNumFxParams; ++i)
         cmd (CommandType::SetFxParam, kDrumTool, -1, i, p.masterFx[(size_t) i]);
+
+    for (int b = 0; b < kMaxBassSynths; ++b)
+    {
+        const int tool = kFirstBassTool + b;
+        if (! s.tools[(size_t) tool].active)
+            continue;
+        const auto& bass = s.bass[(size_t) b];
+        // the scale first: it would snap the notes that follow
+        cmd (CommandType::SetScale, tool, 0, 0, 0.0f);
+        for (int r = 0; r < kBassRows; ++r)
+        {
+            const auto& row = bass.rows[(size_t) r];
+            cmd (CommandType::SetVoiceType, tool, r, (int) row.sound, 0.0f);
+            for (int i = 0; i < kNumBassParams; ++i)
+                cmd (CommandType::SetVoiceParam, tool, r, i, row.params[(size_t) i]);
+            cmd (CommandType::SetLevel, tool, r, 0, row.level);
+            cmd (CommandType::SetPan, tool, r, 0, row.pan);
+            cmd (CommandType::SetMute, tool, r, 0, row.mute ? 1.0f : 0.0f);
+            cmd (CommandType::SetSolo, tool, r, 0, row.solo ? 1.0f : 0.0f);
+            cmd (CommandType::SetCable, tool, r, row.cable, 0.0f);
+            for (int i = 0; i < kNumFxParams; ++i)
+                cmd (CommandType::SetFxParam, tool, r, i, row.fx[(size_t) i]);
+            for (int pat = 0; pat < kNumPatterns; ++pat)
+                for (int st = 0; st < kNumSteps; ++st)
+                {
+                    const int index = pat * kNumSteps + st;
+                    cmd (CommandType::SetNote, tool, r, index, (float) row.notes[(size_t) pat][(size_t) st]);
+                    cmd (CommandType::SetLength, tool, r, index, (float) row.lengths[(size_t) pat][(size_t) st]);
+                    cmd (CommandType::SetStep, tool, r, index, row.velocity[(size_t) pat][(size_t) st]);
+                }
+        }
+        cmd (CommandType::SetKey, tool, 0, bass.key, 0.0f);
+        cmd (CommandType::SetScale, tool, 0, bass.scale, 0.0f);
+        cmd (CommandType::SelectPattern, tool, 0, bass.pattern, 0.0f);
+        cmd (CommandType::SetMasterLevel, tool, 0, 0, bass.masterLevel);
+        for (int i = 0; i < kNumFxParams; ++i)
+            cmd (CommandType::SetFxParam, tool, -1, i, bass.masterFx[(size_t) i]);
+    }
 
     cmd (CommandType::SetBpm, kStudio, 0, 0, s.bpm);
     cmd (CommandType::SetSwing, kStudio, 0, 0, s.swing);
@@ -182,6 +223,13 @@ juce::String ModularSynthProcessor::trackName (int track) const
     return drumName (tr.voice, tr.character);
 }
 
+juce::String ModularSynthProcessor::trackName (int tool, int track) const
+{
+    if (const int b = bassIndex (tool); b >= 0)
+        return bassSoundName (uiState.bass[(size_t) b].rows[(size_t) track].sound);
+    return trackName (track);
+}
+
 std::optional<Take> ModularSynthProcessor::takeFinishedRecording()
 {
     const int index = finishedTake.exchange (-1);
@@ -194,14 +242,18 @@ std::optional<Take> ModularSynthProcessor::takeFinishedRecording()
 
 void ModularSynthProcessor::syncPatternFromEngine()
 {
-    // The engine switches to a queued pattern on its own at the end of a bar;
+    // A tool switches to a queued pattern on its own at the end of a bar;
     // mirror that once it has happened.
-    const int queued = uiState.drums.queuedPattern;
-    if (queued >= 0 && queuedPatternIndex.load() < 0 && currentPatternIndex.load() == queued)
-    {
-        uiState.drums.pattern = queued;
-        uiState.drums.queuedPattern = -1;
-    }
+    auto sync = [this] (int tool, int& pattern, int& queuedPattern) {
+        if (queuedPattern >= 0 && queuedPatterns[(size_t) tool].load() < 0 && currentPatterns[(size_t) tool].load() == queuedPattern)
+        {
+            pattern = queuedPattern;
+            queuedPattern = -1;
+        }
+    };
+    sync (kDrumTool, uiState.drums.pattern, uiState.drums.queuedPattern);
+    for (int b = 0; b < kMaxBassSynths; ++b)
+        sync (kFirstBassTool + b, uiState.bass[(size_t) b].pattern, uiState.bass[(size_t) b].queuedPattern);
 }
 
 float ModularSynthProcessor::toolHistory (int tool, int age) const
@@ -210,19 +262,20 @@ float ModularSynthProcessor::toolHistory (int tool, int age) const
     return toolHistoryValues[(size_t) (tool * kHistoryLength + pos)].load (std::memory_order_relaxed);
 }
 
-float ModularSynthProcessor::trackHistory (int t, int age) const
+float ModularSynthProcessor::trackHistory (int tool, int t, int age) const
 {
     const int pos = (historyPos.load() - 1 - age + kHistoryLength * 4) % kHistoryLength;
-    return history[(size_t) (t * kHistoryLength + pos)].load (std::memory_order_relaxed);
+    return history[(size_t) (lane (tool, t) * kHistoryLength + pos)].load (std::memory_order_relaxed);
 }
 
-void ModularSynthProcessor::copyTrackScope (int t, float* dest, int count) const
+void ModularSynthProcessor::copyTrackScope (int tool, int t, float* dest, int count) const
 {
     const int end = scopePos.load();
+    const auto base = (size_t) (lane (tool, t) * kScopeLength);
     for (int i = 0; i < count; ++i)
     {
         const int pos = (end - count + i + kScopeLength * 4) % kScopeLength;
-        dest[i] = scopeSamples[(size_t) (t * kScopeLength + pos)].load (std::memory_order_relaxed);
+        dest[i] = scopeSamples[base + (size_t) pos].load (std::memory_order_relaxed);
     }
 }
 
@@ -339,8 +392,8 @@ void ModularSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
     float* left = buffer.getWritePointer (0);
     float* right = buffer.getNumChannels() > 1 ? buffer.getWritePointer (1) : nullptr;
     std::array<float, kHistoryWindow> scratch {};
-    float blockMasterPeak = 0.0f, blockDrumPeak = 0.0f;
-    auto& drums = engine.drums();
+    float blockMasterPeak = 0.0f;
+    busBlockPeak.fill (0.0f);
 
     for (int offset = 0; offset < numSamples;)
     {
@@ -349,39 +402,42 @@ void ModularSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
         offset += n;
         windowFill += n;
         blockMasterPeak = juce::jmax (blockMasterPeak, engine.masterPeak());
-        blockDrumPeak = juce::jmax (blockDrumPeak, drums.masterPeak());
 
+        const int scopeStart = scopePos.load (std::memory_order_relaxed);
         for (int tool = 0; tool < kNumToolSlots; ++tool)
         {
             toolWindowPeak[(size_t) tool] = juce::jmax (toolWindowPeak[(size_t) tool], engine.toolPeak (tool));
             toolPeaks[(size_t) tool].store (engine.toolPeak (tool), std::memory_order_relaxed);
-        }
+            if (! engine.toolActive (tool))
+                continue;
+            busBlockPeak[(size_t) tool] = juce::jmax (busBlockPeak[(size_t) tool], engine.busPeak (tool));
 
-        for (int t = 0; t < kNumTracks; ++t)
-        {
-            windowPeak[(size_t) t] = juce::jmax (windowPeak[(size_t) t], drums.trackPeak (t));
-            trackPeaks[(size_t) t].store (drums.trackPeak (t), std::memory_order_relaxed);
-            if (drums.trackTriggered (t))
-                hitCounts[(size_t) t].fetch_add (1, std::memory_order_relaxed);
-        }
-        drums.clearTriggered();
+            const int tracks = toolKind (tool) == ToolKind::Drums ? kNumTracks : kBassRows;
+            for (int t = 0; t < tracks; ++t)
+            {
+                const auto l = (size_t) lane (tool, t);
+                const float peak = engine.trackPeak (tool, t);
+                windowPeak[l] = juce::jmax (windowPeak[l], peak);
+                trackPeaks[l].store (peak, std::memory_order_relaxed);
+                trackNotes[l].store (engine.trackNote (tool, t), std::memory_order_relaxed);
+                if (engine.trackTriggered (tool, t))
+                    hitCounts[l].fetch_add (1, std::memory_order_relaxed);
 
-        const int scopeStart = scopePos.load (std::memory_order_relaxed);
-        for (int t = 0; t < kNumTracks; ++t)
-        {
-            const float* out = drums.trackOutput (t);
-            for (int i = 0; i < n; ++i)
-                scopeSamples[(size_t) (t * kScopeLength + (scopeStart + i) % kScopeLength)].store (out[i], std::memory_order_relaxed);
+                const float* out = engine.trackOutput (tool, t);
+                for (int i = 0; i < n; ++i)
+                    scopeSamples[l * kScopeLength + (size_t) ((scopeStart + i) % kScopeLength)].store (out[i], std::memory_order_relaxed);
+            }
         }
+        engine.clearTriggered();
         scopePos.store ((scopeStart + n) % kScopeLength);
 
         if (windowFill >= kHistoryWindow)
         {
             const int pos = historyPos.load (std::memory_order_relaxed);
-            for (int t = 0; t < kNumTracks; ++t)
+            for (int l = 0; l < kLanes; ++l)
             {
-                history[(size_t) (t * kHistoryLength + pos)].store (windowPeak[(size_t) t], std::memory_order_relaxed);
-                windowPeak[(size_t) t] = 0.0f;
+                history[(size_t) (l * kHistoryLength + pos)].store (windowPeak[(size_t) l], std::memory_order_relaxed);
+                windowPeak[(size_t) l] = 0.0f;
             }
             for (int tool = 0; tool < kNumToolSlots; ++tool)
             {
@@ -402,12 +458,15 @@ void ModularSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
         playedSampleCount += numSamples;
 
     masterPeakValue.store (blockMasterPeak, std::memory_order_relaxed);
-    drumBusPeakValue.store (blockDrumPeak, std::memory_order_relaxed);
+    for (int tool = 0; tool < kNumToolSlots; ++tool)
+    {
+        busPeaks[(size_t) tool].store (busBlockPeak[(size_t) tool], std::memory_order_relaxed);
+        currentPatterns[(size_t) tool] = engine.toolPattern (tool);
+        queuedPatterns[(size_t) tool] = engine.toolQueuedPattern (tool);
+    }
     playingFlag = engine.isPlaying();
     recordingFlag = recording;
     stepIndex = engine.currentStep();
-    currentPatternIndex = drums.currentPattern();
-    queuedPatternIndex = drums.queuedPattern();
     recordedSampleCount = recordPosition;
 }
 

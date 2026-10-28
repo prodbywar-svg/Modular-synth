@@ -31,14 +31,15 @@ The app opens two windows:
 
 - the **studio window**: PLAY / STOP / REC, EXPORT, SAVE / OPEN, tempo and swing,
   one row per tool, and the studio **MASTER** effects rack that every tool goes through;
-- a window for each **tool**. For now that is the **drum machine**; a bass synth and
-  a looper for your audio interface come next.
+- a window for each **tool**: the **drum machine** and up to four **bass synths**.
+  A looper for your audio interface comes next.
 
 Each tool's row in the studio window shows its sound as a scrolling barcode, its
 **LEVEL**, **M** / **S** (mute / solo the whole tool), **OPEN** / **HIDE** for its
-window, and **REMOVE**, which takes it out of the project (it asks first). A
-removed tool's row offers **+ ADD** to bring a fresh one back, already in time
-with the others. Closing a tool's window only hides it: it keeps playing.
+window, and **REMOVE**, which takes it out of the project (it asks first).
+**+ BASS SYNTH** (and **+ DRUM MACHINE** once it has been removed) under the rows
+adds a fresh tool, already in time with the others. Closing a tool's window only
+hides it: it keeps playing.
 
 All tools run on one clock: one tempo, one swing, patterns switch together at the
 end of the bar. Space, Esc, R, E, Ctrl+S and Ctrl+O work from any window. Saved
@@ -74,6 +75,48 @@ from earlier versions open as a studio with just the drum machine.
 
 A MIDI controller also works: notes 36-43 (standard drum pads) or C4-G4 hit pads 1-8.
 
+## The bass synth
+
+A monophonic bass synth in the same 16-step, 4-pattern grid: 8 rows, one sound
+each, every row its own voice. Each lit step holds a **note**, shown in its tag
+(`C2`, `D#2`...), a **length** (the line after the tag, up to 16 steps) and a
+**velocity** (the number under it).
+
+| Do this | To |
+| --- | --- |
+| Click an empty step | add a note (the row's last note, one step long) |
+| Drag a note up / down | change its pitch, one step of the scale at a time (the mouse wheel does the same) |
+| Drag a note sideways | make it longer or shorter |
+| `Shift` + drag up / down | set its velocity |
+| Click a note (without dragging) / right-click it | remove it |
+| **KEY** / **SCALE** | lock every note to a key and scale (13 scales, CHROMATIC = no lock). Changing either moves every note into it (`Ctrl+Z` undoes) |
+| Drag from one row's jack (the **CUT** column) to another's | join them with a patch cable: rows joined by cables form a **cut group** (letters A, B... by the jacks), where a new note cuts the one still ringing in the others. Rows with no cable ring on their own |
+| Drag a cable's jack onto nothing / right-click a jack | unplug it / unplug every cable at that jack |
+| `Z S X D C V G B H N J M` (and on to `/`) | play the selected row live like a piano, snapped to the scale; `[` `]` change the octave |
+| `1`-`8`, up / down | select a row |
+| Click a row's number box | hear its note |
+| Right-click a row name | change its sound, copy / paste / randomize its sequence |
+
+**P1-P4**, **CLEAR**, **RESET**, **COPY ROW / COPY PATTERN / PASTE**, **RANDOM** (in
+the key and scale, shaped by the sound) and `Ctrl+Z` work as in the drum machine.
+Notes still hold their length when they overlap; a new note on a row while the
+last is still held slides into it (**GLIDE**).
+
+| Sound | TONE control |
+| --- | --- |
+| SUB | sine, HARMONICS adds the overtones |
+| PULSE | pulse wave, WIDTH |
+| SAW | saw with a SUB OSC an octave down |
+| ACID | saw / square (WAVE) through a screaming resonant filter |
+| FM | two-operator FM, INDEX = growl |
+| REESE | two saws, DETUNE apart |
+| 1-BIT | 1-bit square, CRUSH lowers its sample rate |
+| BOOM | 808-style sine with a pitch DROP |
+
+Every sound also has CUTOFF, RESO, ENV AMT and F DECAY (a filter envelope),
+DRIVE, GLIDE, and a full ATTACK / DECAY / SUSTAIN / RELEASE envelope, drawn
+under the controls. Each row and the **BASS BUS** have the full effects rack.
+
 ### The kit
 
 Every drum comes in three characters:
@@ -100,16 +143,18 @@ Pitch controls show the note as well as the frequency, e.g. `E1 41.2 Hz`.
 
 ### Effects
 
-Every track, the drum bus and the studio master have the same effects rack, in this order:
+Every drum, bass row, tool bus and the studio master have the same effects rack, in this order:
 
 1. **Bitcrusher**: bit depth and sample-rate reduction.
 2. **Distortion**: soft clip, hard clip, wavefold or rectify, with a tone control and dry/wet mix.
 3. **Filter**: resonant low-pass.
-4. **Delay**: time in ms or note lengths (1/64 to 8 bars, including dotted and triplet).
-5. **Grain delay**: chops the past into little overlapping grains. Time and grain size
+4. **Chorus**: **ENSEMBLE** (three slow voices, wide and lush) or **DOUBLER** (two
+   short delays left and right, like a part played twice), with RATE, DEPTH and MIX.
+5. **Delay**: time in ms or note lengths (1/64 to 8 bars, including dotted and triplet).
+6. **Grain delay**: chops the past into little overlapping grains. Time and grain size
    in ms or notes, pitch shift (±12 semitones), spray (random scatter), feedback.
-6. **Reverb**: decay time in ms or notes (e.g. a tail exactly one bar long), damping.
-7. **Psychosis**: up to six OTT-style three-band compressors in a row, squashing loud
+7. **Reverb**: decay time in ms or notes (e.g. a tail exactly one bar long), damping.
+8. **Psychosis**: up to six OTT-style three-band compressors in a row, squashing loud
    parts down and dragging quiet parts up. Release time in ms or notes.
 
 ### Recording and export
@@ -121,9 +166,9 @@ can rebuild it perfectly, once for the master and once per track.
 **EXPORT** writes a folder containing:
 
 - `<name>_Master.wav`: the full mix after the studio master effects
-- `<name>_DRUMS.wav`: each tool on its own (its own bus **and** its share of the
+- `<name>_DRUMS.wav`, `<name>_BASS-1.wav`: each tool on its own (its own bus **and** its share of the
   studio master effects)
-- `<name>_DRUMS-01-KICK.wav`, `<name>_DRUMS-02-CLICK.wav`, ...: each track of a tool
+- `<name>_DRUMS-01-KICK.wav`, `<name>_BASS-1-04-ACID.wav`, ...: each track of a tool
   on its own, after its own effects, its tool's bus and its share of the master
 
 All files are 24-bit stereo at the app's sample rate, start at the same moment
@@ -168,15 +213,17 @@ node web/tests/parity.mjs <native_render>  # wasm output must match the native e
 - `Source/engine`: the instrument with no UI or audio-device code.
   `StudioEngine` (every tool on one clock, through the studio master) and
   `StudioState` (the tools, studio commands, save/open),
-  `EngineCore` (the drum machine: sequencer, patterns, voices, mixer, drum bus), `Voice` (every voice
+  `EngineCore` (the drum machine: sequencer, patterns, voices, mixer, drum bus),
+  `BassEngine` / `BassVoice` / `BassState` (the bass synth: notes, scales, cut
+  groups, its 8 sounds), `Voice` (every drum voice
   in its three characters), `Hr16Bank` (the embedded HR-16 samples in
   `assets/hr16`), `FxChain` (effects rack) and `Effects` (grain delay, reverb,
-  Psychosis), `OfflineRenderer` (take replay and WAV export),
+  Psychosis, chorus), `OfflineRenderer` (take replay and WAV export),
   `ProjectState` (project data, commands, save/open).
 - `Source/app`: `PluginProcessor` runs the engine on the audio thread, receives
   UI commands through a lock-free queue and records them with sample positions;
   `PluginEditor` is the studio window, which opens each tool's window
-  (`DrumMachineView`); `Shared` and `Widgets` hold what they share.
+  (`DrumMachineView`, `BassSynthView`); `SignalBox` draws the signal panels; `Shared` and `Widgets` hold what they share.
 - `web/wasm/WebEngine.cpp`: the engine as plain C functions for the browser.
   `web/site`: the page (`app.js`), the audio worklet that runs the engine
   (`worklet.js`) and the WAV reader/writer.

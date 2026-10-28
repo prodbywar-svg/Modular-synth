@@ -27,6 +27,7 @@ void FxChain::prepare (double sampleRate)
     const auto size = (size_t) (kMaxDelaySeconds * sr) + 2;
     delayL.assign (size, 0.0f);
     delayR.assign (size, 0.0f);
+    chorus.prepare (sr);
     grain.prepare (sr);
     reverb.prepare (sr);
     psychosis.prepare (sr);
@@ -45,10 +46,11 @@ void FxChain::reset()
     std::fill (delayL.begin(), delayL.end(), 0.0f);
     std::fill (delayR.begin(), delayR.end(), 0.0f);
     writePos = 0;
+    chorus.reset();
     grain.reset (99u);
     reverb.reset();
     psychosis.reset();
-    delayOn = grainOn = reverbOn = psyOn = filterOn = distOn = false;
+    delayOn = grainOn = reverbOn = psyOn = filterOn = distOn = chorusOn = false;
     firstParams = true;
     setParams (current, currentBpm > 0.0 ? currentBpm : 120.0);
     delaySamples = delayTarget;
@@ -77,6 +79,12 @@ void FxChain::setParams (const FxParams& p, double bpm)
     filterOn = p[fxCutoff] < 0.999f || p[fxResonance] > 0.001f;
     filterL.setup (cutoffHz (p[fxCutoff]), resonanceQ (p[fxResonance]), sr);
     filterR.setup (cutoffHz (p[fxCutoff]), resonanceQ (p[fxResonance]), sr);
+
+    const bool wantChorus = p[fxChorusMix] > 0.0001f;
+    if (wantChorus && ! chorusOn)
+        chorus.reset();
+    chorusOn = wantChorus;
+    chorus.set (p[fxChorusMode] >= 0.5f, fxParamValue (fxChorusRate, p[fxChorusRate]), p[fxChorusDepth], p[fxChorusMix]);
 
     const bool wantDelay = p[fxDelayMix] > 0.0001f;
     if (wantDelay && ! delayOn)
@@ -163,29 +171,32 @@ void FxChain::process (float* left, float* right, int numSamples)
             r = filterR.lowpass (r);
         }
 
-        if (delayOn)
-        {
-            // glide the delay time to avoid zipper clicks when it's dragged
-            delaySamples += (delayTarget - delaySamples) * 0.001f;
-            float readPos = (float) writePos - delaySamples;
-            if (readPos < 0.0f)
-                readPos += (float) delaySize;
-            const int i0 = (int) readPos;
-            const int i1 = (i0 + 1) % delaySize;
-            const float frac = readPos - (float) i0;
-            const float dl = delayL[(size_t) i0] + (delayL[(size_t) i1] - delayL[(size_t) i0]) * frac;
-            const float dr = delayR[(size_t) i0] + (delayR[(size_t) i1] - delayR[(size_t) i0]) * frac;
-
-            delayL[(size_t) writePos] = l + dl * feedback;
-            delayR[(size_t) writePos] = r + dr * feedback;
-            writePos = (writePos + 1) % delaySize;
-
-            l += dl * delayMix;
-            r += dr * delayMix;
-        }
-
         left[i] = l;
         right[i] = r;
+    }
+
+    if (chorusOn)
+        chorus.process (left, right, numSamples);
+
+    for (int i = 0; i < numSamples && delayOn; ++i)
+    {
+        // glide the delay time to avoid zipper clicks when it's dragged
+        delaySamples += (delayTarget - delaySamples) * 0.001f;
+        float readPos = (float) writePos - delaySamples;
+        if (readPos < 0.0f)
+            readPos += (float) delaySize;
+        const int i0 = (int) readPos;
+        const int i1 = (i0 + 1) % delaySize;
+        const float frac = readPos - (float) i0;
+        const float dl = delayL[(size_t) i0] + (delayL[(size_t) i1] - delayL[(size_t) i0]) * frac;
+        const float dr = delayR[(size_t) i0] + (delayR[(size_t) i1] - delayR[(size_t) i0]) * frac;
+
+        delayL[(size_t) writePos] = left[i] + dl * feedback;
+        delayR[(size_t) writePos] = right[i] + dr * feedback;
+        writePos = (writePos + 1) % delaySize;
+
+        left[i] += dl * delayMix;
+        right[i] += dr * delayMix;
     }
 
     if (grainOn)

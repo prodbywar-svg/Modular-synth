@@ -251,6 +251,7 @@ const SECTIONS = [
   { name: 'CRUSH>DIST>FILTER', items: [0, 1, 2, 3, 4, 5, 6, 7].map(FX) },
   { name: 'DELAY>REVERB', items: [8, 9, 10, 11, 19, 20, 21, 22].map(FX) },
   { name: 'GRAIN', items: [12, 13, 14, 15, 16, 17, 18].map(FX) },
+  { name: 'CHORUS', items: [28, 29, 30, 31].map(FX) },
   { name: 'PSYCHOSIS', items: [23, 24, 25, 26, 27].map(FX) },
 ];
 
@@ -360,7 +361,8 @@ function buildSliders() {
     s.append(row1);
     if (m.toggle) {
       const seg = el('div', 'seg');
-      seg.append(el('span', '', 'MS'), el('span', '', 'NOTE'));
+      const [off, on] = m.name === 'CHR MODE' ? ['ENSEMBLE', 'DOUBLER'] : ['MS', 'NOTE'];
+      seg.append(el('span', '', off), el('span', '', on));
       s.append(seg);
       s.addEventListener('click', () => m.set(m.get() > 0.5 ? 0 : 1));
     } else {

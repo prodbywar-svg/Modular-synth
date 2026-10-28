@@ -485,7 +485,7 @@ Command toolCommand (CommandType type, int tool, float value = 0.0f)
 void testStudioToolMixing()
 {
     std::printf ("studio: tool mute, solo, remove and the master rack\n");
-    const auto studio = makeDefaultStudio();
+    const auto studio = studioWithDrums (makeDefaultProject());
     const auto take = makePatternTake (studio, 1, kSr);
     const auto master = renderStem (take, {}, take.length);
     const auto drums = renderStem (take, { kDrumTool, -1 }, take.length);
@@ -572,6 +572,238 @@ void testStudioSaveAndOpen()
     CHECK (std::abs (q.drums.masterFx[fxCutoff] - 0.5f) < 1.0e-6f);
     CHECK (q.masterFx == defaultFxParams());
 }
+
+// A studio with just one bass synth (slot 1) and nothing on its patterns.
+StudioState bassOnlyStudio()
+{
+    auto s = makeDefaultStudio();
+    for (int t = 0; t < kNumToolSlots; ++t)
+        s.tools[(size_t) t].active = t == kFirstBassTool;
+    for (auto& row : s.bass[0].rows)
+    {
+        row.cable = -1;
+        for (auto& p : row.velocity)
+            p.fill (0.0f);
+    }
+    return s;
+}
+
+void setBassNote (StudioState& s, int row, int step, int note, int length, float velocity = 1.0f)
+{
+    auto& r = s.bass[0].rows[(size_t) row];
+    r.velocity[0][(size_t) step] = velocity;
+    r.notes[0][(size_t) step] = (std::int8_t) note;
+    r.lengths[0][(size_t) step] = (std::uint8_t) length;
+}
+
+void testBassSoundsRender()
+{
+    std::printf ("bass: every sound renders, the default bass line plays\n");
+    const auto def = makeDefaultStudio();
+    auto take = makePatternTake (def, 1, kSr);
+    const auto bassMix = renderStem (take, { kFirstBassTool, -1 }, take.length);
+    CHECK (bassMix.finite());
+    CHECK (bassMix.peak() > 0.05f);
+    CHECK (bassMix.peak() < 4.0f);
+
+    for (int sound = 0; sound < kNumBassSounds; ++sound)
+    {
+        auto s = bassOnlyStudio();
+        Command c;
+        c.type = CommandType::SetVoiceType;
+        c.tool = kFirstBassTool;
+        c.track = 0;
+        c.index = sound;
+        applyToStudio (s, c);
+        setBassNote (s, 0, 0, 36, 4);
+        const auto t = makePatternTake (s, 1, kSr);
+        const auto out = renderStem (t, { kFirstBassTool, 0 }, t.length);
+        std::printf ("  %-6s peak %.3f\n", bassSoundName ((BassSound) sound), (double) out.peak());
+        CHECK (out.finite());
+        CHECK (out.peak() > 0.02f);
+        CHECK (out.peak() < 2.0f);
+    }
+}
+
+void testBassPitch()
+{
+    std::printf ("bass: a SUB note sounds at its pitch\n");
+    auto s = bassOnlyStudio();
+    s.bass[0].rows[0].params[bpDrive] = 0.0f; // clean sine
+    setBassNote (s, 0, 0, 45, 8); // A2 = 110 Hz
+    const auto t = makePatternTake (s, 1, kSr);
+    const auto out = renderStem (t, { kFirstBassTool, 0 }, t.length);
+    // count rising zero crossings over 0.2 s from 0.1 s in
+    int crossings = 0;
+    const size_t from = (size_t) (kSr * 0.1), to = (size_t) (kSr * 0.3);
+    for (size_t i = from + 1; i < to; ++i)
+        if (out.l[i - 1] <= 0.0f && out.l[i] > 0.0f)
+            ++crossings;
+    const double hz = crossings / 0.2;
+    std::printf ("  measured %.1f Hz (expected 110)\n", hz);
+    CHECK (std::abs (hz - 110.0) < 6.0);
+}
+
+void testBassCutGroups()
+{
+    std::printf ("bass: rows joined by a cable cut each other, others ring on\n");
+    auto s = bassOnlyStudio();
+    // row 0 holds a long note, row 1 plays on step 5
+    setBassNote (s, 0, 0, 36, 16);
+    setBassNote (s, 1, 4, 43, 1);
+    const double stepLen = kSr * 60.0 / (double) s.bpm / 4.0;
+    const auto probe = (std::int64_t) (stepLen * 6.0); // two steps after row 1 played
+
+    auto free = makePatternTake (s, 1, kSr);
+    const auto ringing = renderStem (free, { kFirstBassTool, 0 }, free.length);
+    CHECK (ringing.onset (probe) >= 0 && ringing.onset (probe) < probe + 200);
+
+    Command cable;
+    cable.type = CommandType::SetCable;
+    cable.tool = kFirstBassTool;
+    cable.track = 1;
+    cable.index = 0;
+    applyToStudio (s, cable);
+    CHECK (cutGroups (s.bass[0])[0] == cutGroups (s.bass[0])[1]);
+    CHECK (cutGroups (s.bass[0])[2] != cutGroups (s.bass[0])[0]);
+    auto cut = makePatternTake (s, 1, kSr);
+    const auto silenced = renderStem (cut, { kFirstBassTool, 0 }, cut.length);
+    CHECK (silenced.onset (probe) == -1);
+}
+
+void testScaleLock()
+{
+    std::printf ("bass: notes snap into the key and scale\n");
+    // C minor: C D Eb F G Ab Bb
+    CHECK (snapToScale (40, 0, 2) == 39);     // E -> Eb
+    CHECK (snapToScale (37, 0, 2) == 36);     // C# -> C (lower on a tie)
+    CHECK (snapToScale (45, 0, 2) == 44);     // A -> Ab
+    CHECK (stepInScale (36, 0, 2, 1) == 38);  // C -> D
+    CHECK (stepInScale (36, 0, 2, 2) == 39);  // C -> Eb
+    CHECK (stepInScale (36, 0, 2, -1) == 34); // C -> Bb
+    CHECK (snapToScale (41, 0, 0) == 41);     // chromatic leaves notes alone
+    CHECK (snapToScale (10, 0, 2) == kBassLowNote);
+
+    auto b = makeDefaultBass();
+    b.rows[0].notes[0][0] = 40;
+    Command scale;
+    scale.type = CommandType::SetScale;
+    scale.index = 1; // C major: E stays, Eb would go
+    applyToBass (b, scale);
+    CHECK (b.rows[0].notes[0][0] == 40);
+    Command key;
+    key.type = CommandType::SetKey;
+    key.index = 2; // D major: E is in, C becomes C# or B
+    applyToBass (b, key);
+    CHECK (b.rows[0].notes[0][0] == 40);
+    for (const auto& row : b.rows)
+        for (const auto& p : row.notes)
+            for (auto n : p)
+                CHECK (noteInScale (n, 2, 1));
+}
+
+void testBassSaveAndOpen()
+{
+    std::printf ("bass: saved and opened with the studio\n");
+    auto s = makeDefaultStudio();
+    s.tools[kFirstBassTool + 2].active = true;
+    auto& b = s.bass[2];
+    b.key = 7;
+    b.scale = 4;
+    b.rows[3].cable = 5;
+    b.rows[3].sound = BassSound::Reese;
+    b.rows[3].params[bpRelease] = 0.25f;
+    b.rows[3].velocity[1][9] = 0.5f;
+    b.rows[3].notes[1][9] = 50;
+    b.rows[3].lengths[1][9] = 3;
+    b.masterFx[fxChorusMix] = 0.4f;
+
+    StudioState q;
+    std::array<juce::String, kNumTracks> paths;
+    CHECK (studioFromVar (juce::JSON::parse (juce::JSON::toString (studioToVar (s))), q, paths));
+    CHECK (q.tools[kFirstBassTool].active && q.tools[kFirstBassTool + 2].active && ! q.tools[kFirstBassTool + 1].active);
+    const auto& r = q.bass[2];
+    CHECK (r.key == 7 && r.scale == 4);
+    CHECK (r.rows[3].cable == 5 && r.rows[3].sound == BassSound::Reese);
+    CHECK (std::abs (r.rows[3].params[bpRelease] - 0.25f) < 1.0e-6f);
+    CHECK (std::abs (r.rows[3].velocity[1][9] - 0.5f) < 1.0e-6f);
+    CHECK (r.rows[3].notes[1][9] == 50 && r.rows[3].lengths[1][9] == 3);
+    CHECK (std::abs (r.masterFx[fxChorusMix] - 0.4f) < 1.0e-6f);
+}
+
+void testChorus()
+{
+    std::printf ("chorus: ensemble and doubler stay finite and widen a mono sound\n");
+    for (int mode = 0; mode < 2; ++mode)
+    {
+        auto s = bassOnlyStudio();
+        setBassNote (s, 0, 0, 36, 8);
+        s.bass[0].rows[0].pan = 0.5f;
+        auto& fx = s.bass[0].rows[0].fx;
+        fx[fxChorusMode] = (float) mode;
+        fx[fxChorusMix] = 0.8f;
+        fx[fxChorusDepth] = 0.8f;
+        const auto t = makePatternTake (s, 1, kSr);
+        const auto out = renderStem (t, { kFirstBassTool, 0 }, t.length);
+        float side = 0.0f;
+        for (size_t i = 0; i < out.l.size(); ++i)
+            side = std::max (side, std::abs (out.l[i] - out.r[i]));
+        std::printf ("  %s: peak %.3f, left-right difference %.3f\n", mode == 0 ? "ENSEMBLE" : "DOUBLER", (double) out.peak(), (double) side);
+        CHECK (out.finite());
+        CHECK (out.peak() > 0.02f && out.peak() < 2.0f);
+        CHECK (side > 0.01f); // no longer mono
+    }
+}
+
+void testBassLiveNotes()
+{
+    std::printf ("bass: a live note holds until it is let go\n");
+    StudioEngine engine;
+    engine.prepare (kSr, 512);
+    engine.setState (bassOnlyStudio());
+    Command on;
+    on.type = CommandType::Trigger;
+    on.tool = kFirstBassTool;
+    on.track = 0;
+    on.index = 40; // E2: not in C minor, plays Eb2
+    on.value = 1.0f;
+    engine.apply (on);
+    std::vector<float> l ((size_t) kSr), r ((size_t) kSr);
+    engine.process (l.data(), r.data(), (int) kSr);
+    float held = 0.0f;
+    for (size_t i = l.size() / 2; i < l.size(); ++i)
+        held = std::max (held, std::abs (l[i]));
+    CHECK (held > 0.02f);
+    CHECK (std::abs (engine.trackNote (kFirstBassTool, 0) - 39.0f) < 0.01f);
+
+    Command off = on;
+    off.type = CommandType::NoteOff;
+    engine.apply (off);
+    engine.process (l.data(), r.data(), (int) kSr);
+    float after = 0.0f;
+    for (size_t i = l.size() / 2; i < l.size(); ++i)
+        after = std::max (after, std::abs (l[i]));
+    std::printf ("  held %.3f, after release %.5f\n", (double) held, (double) after);
+    CHECK (after < 0.001f);
+}
+
+void testBassExportFiles()
+{
+    std::printf ("export writes each bass row as a stem\n");
+    auto folder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms-bass-export-test");
+    folder.deleteRecursively();
+    const auto take = makePatternTake (makeDefaultStudio(), 1, kSr);
+    ExportOptions opt;
+    opt.folder = folder;
+    opt.baseName = "t";
+    const auto result = exportTake (take, opt);
+    CHECK (result.ok);
+    CHECK (folder.getChildFile ("t_BASS-1.wav").existsAsFile());
+    CHECK (folder.getChildFile ("t_BASS-1-01-SUB.wav").existsAsFile());
+    CHECK (folder.getChildFile ("t_BASS-1-04-ACID.wav").existsAsFile());
+    CHECK (! folder.getChildFile ("t_BASS-1-02-PULSE.wav").existsAsFile()); // nothing on P1
+    folder.deleteRecursively();
+}
 } // namespace
 
 // EngineTests --demo <folder>: renders the starter patterns (master + stems)
@@ -643,6 +875,14 @@ int main (int argc, char** argv)
     testStudioToolMixing();
     testAddedToolJoinsTheBeat();
     testStudioSaveAndOpen();
+    testBassSoundsRender();
+    testBassPitch();
+    testBassCutGroups();
+    testScaleLock();
+    testBassSaveAndOpen();
+    testChorus();
+    testBassLiveNotes();
+    testBassExportFiles();
 
     if (failures == 0)
         std::printf ("\nall engine tests passed\n");

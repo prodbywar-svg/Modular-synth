@@ -32,6 +32,9 @@ set(ENGINE_SOURCES
     Source/engine/Effects.cpp
     Source/engine/Hr16Bank.cpp
     Source/engine/EngineCore.cpp
+    Source/engine/BassState.cpp
+    Source/engine/BassVoice.cpp
+    Source/engine/BassEngine.cpp
     Source/engine/StudioState.cpp
     Source/engine/StudioEngine.cpp
     Source/engine/OfflineRenderer.cpp)
@@ -70,8 +73,10 @@ target_sources(ModularSynth PRIVATE
     ${ENGINE_SOURCES}
     Source/app/PluginProcessor.cpp
     Source/app/PluginEditor.cpp
+    Source/app/BassSynthView.cpp
     Source/app/DrumMachineView.cpp
     Source/app/Shared.cpp
+    Source/app/SignalBox.cpp
     Source/app/Widgets.cpp)
 
 target_include_directories(ModularSynth PRIVATE Source)

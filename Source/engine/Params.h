@@ -75,6 +75,13 @@ enum FxParam
     fxPsySync,
     fxPsyMix,
 
+    // added after the original rack, so older files and the browser version
+    // keep their numbering; it runs after the filter
+    fxChorusMode, // ENSEMBLE / DOUBLER
+    fxChorusRate,
+    fxChorusDepth,
+    fxChorusMix,
+
     kNumFxParams
 };
 

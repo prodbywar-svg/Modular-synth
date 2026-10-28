@@ -313,4 +313,87 @@ void Psychosis::process (float* left, float* right, int numSamples)
         right[n] = right[n] * (1.0f - mix) + r * mix;
     }
 }
+// ---- Chorus -------------------------------------------------------------------
+
+void Chorus::prepare (double sampleRate)
+{
+    sr = sampleRate;
+    const auto size = (size_t) (0.06 * sr) + 4; // longest tap plus its sweep
+    bufL.assign (size, 0.0f);
+    bufR.assign (size, 0.0f);
+    reset();
+}
+
+void Chorus::reset()
+{
+    std::fill (bufL.begin(), bufL.end(), 0.0f);
+    std::fill (bufR.begin(), bufR.end(), 0.0f);
+    writePos = 0;
+    phase = 0.0;
+}
+
+void Chorus::set (bool d, float rateHz, float dep, float m)
+{
+    doubler = d;
+    // the doubler drifts slower than the ensemble sweeps
+    phaseInc = (double) rateHz * (doubler ? 0.3 : 1.0) / sr;
+    depth = dep;
+    mix = m;
+}
+
+float Chorus::read (const std::vector<float>& buf, float delaySamples) const
+{
+    const int size = (int) buf.size();
+    float pos = (float) writePos - delaySamples;
+    while (pos < 0.0f)
+        pos += (float) size;
+    const int i0 = (int) pos % size;
+    const int i1 = (i0 + 1) % size;
+    const float frac = pos - std::floor (pos);
+    return buf[(size_t) i0] + (buf[(size_t) i1] - buf[(size_t) i0]) * frac;
+}
+
+void Chorus::process (float* left, float* right, int numSamples)
+{
+    const float ms = (float) sr * 0.001f;
+    const float twoPi = 2.0f * kPi;
+    const int size = (int) bufL.size();
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        bufL[(size_t) writePos] = left[i];
+        bufR[(size_t) writePos] = right[i];
+
+        const float p = (float) phase * twoPi;
+        float wetL = 0.0f, wetR = 0.0f;
+        if (doubler)
+        {
+            // each side hears the other side late, drifting a little in pitch
+            const float sweep = depth * 1.5f * ms;
+            wetL = read (bufR, 23.0f * ms + sweep * (1.0f + std::sin (p)));
+            wetR = read (bufL, 31.0f * ms + sweep * (1.0f + std::sin (p + 1.9f)));
+        }
+        else
+        {
+            // three voices a third of a cycle apart, the right side offset
+            const float sweep = depth * 4.0f * ms;
+            for (int v = 0; v < 3; ++v)
+            {
+                const float off = twoPi * (float) v / 3.0f;
+                wetL += read (bufL, 9.0f * ms + sweep * (1.0f + std::sin (p + off)));
+                wetR += read (bufR, 9.0f * ms + sweep * (1.0f + std::sin (p + off + kPi / 3.0f)));
+            }
+            wetL *= 0.45f;
+            wetR *= 0.45f;
+        }
+
+        left[i] = left[i] * (1.0f - 0.5f * mix) + wetL * mix;
+        right[i] = right[i] * (1.0f - 0.5f * mix) + wetR * mix;
+
+        writePos = (writePos + 1) % size;
+        phase += phaseInc;
+        if (phase >= 1.0)
+            phase -= 1.0;
+    }
+}
 } // namespace ms

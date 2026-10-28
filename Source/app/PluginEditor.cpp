@@ -5,21 +5,12 @@ using namespace ms;
 namespace
 {
 constexpr int kHeaderHeight = 84;
-constexpr int kMasterHeight = 232;
+constexpr int kMasterHeight = 250;
 constexpr int kStatusHeight = 24;
 constexpr int kMargin = 16;
 constexpr int kStripHeight = 64;
 constexpr int kToolsLabelHeight = 26;
-
-const char* toolTitle (int tool)
-{
-    switch (toolKind (tool))
-    {
-        case ToolKind::Drums: return "DRUM MACHINE";
-        case ToolKind::Count: break;
-    }
-    return "TOOL";
-}
+constexpr int kAddRowHeight = 64;
 } // namespace
 
 // =============================================================================
@@ -73,12 +64,10 @@ class ToolStrip : public juce::Component
 public:
     ToolStrip (ModularSynthEditor& e, int t) : editor (e), tool (t)
     {
-        for (auto* b : { &addButton, &showButton, &removeButton, &muteButton, &soloButton })
+        for (auto* b : { &showButton, &removeButton, &muteButton, &soloButton })
             addAndMakeVisible (*b);
         addAndMakeVisible (level);
 
-        addButton.setText ("+ ADD " + juce::String (toolTitle (tool)));
-        addButton.onClick = [this] { editor.addTool (tool); };
         showButton.onClick = [this] { editor.showToolWindow (tool, ! editor.isToolWindowShowing (tool)); };
         removeButton.onClick = [this] { editor.removeTool (tool); };
         muteButton.onClick = [this] {
@@ -89,28 +78,21 @@ public:
         };
 
         level.setLabel ("LEVEL");
-        level.setDefault (ProjectState().masterLevel);
+        level.setDefault (toolKind (tool) == ToolKind::Bass ? BassState().masterLevel : ProjectState().masterLevel);
         level.format = [] (float v) { return formatDb (levelToGain (v)); };
         level.onChange = [this] (float v) { editor.send (CommandType::SetMasterLevel, tool, 0, 0, v); };
     }
 
     void tick()
     {
-        const int active = mix().active ? 1 : 0;
-        if (active != shownActive)
-        {
-            shownActive = active;
-            for (juce::Component* c : { (juce::Component*) &showButton, (juce::Component*) &removeButton,
-                                        (juce::Component*) &muteButton, (juce::Component*) &soloButton, (juce::Component*) &level })
-                c->setVisible (active);
-            addButton.setVisible (active == 0);
-        }
         const bool showing = editor.isToolWindowShowing (tool);
         showButton.setText (showing ? "HIDE" : "OPEN");
         showButton.setOn (showing);
         muteButton.setOn (mix().mute);
         soloButton.setOn (mix().solo);
-        if (toolKind (tool) == ToolKind::Drums)
+        if (const int b = bassIndex (tool); b >= 0)
+            level.setValue (editor.processor().getStudioState().bass[(size_t) b].masterLevel);
+        else
             level.setValue (editor.processor().getUiState().masterLevel);
         repaint();
     }
@@ -133,7 +115,7 @@ public:
         g.drawText (toolTitle (tool), juce::Rectangle<float> (48.0f, 4.0f, 220.0f, mid - 2.0f), juce::Justification::bottomLeft);
         g.setFont (look::mono (9.5f));
         g.setColour (look::dim);
-        g.drawText (active ? summary() : juce::String ("REMOVED // NOT IN THE PROJECT"),
+        g.drawText (summary(),
                     juce::Rectangle<float> (48.0f, mid + 2.0f, 220.0f, mid - 6.0f), juce::Justification::topLeft, true);
 
         if (! active)
@@ -179,8 +161,6 @@ public:
         showButton.setBounds (row.removeFromLeft (70));
         row.removeFromLeft (6);
         removeButton.setBounds (row.removeFromLeft (84));
-
-        addButton.setBounds (290, y, 220, 20);
     }
 
 private:
@@ -207,14 +187,27 @@ private:
                     }
             return "P" + juce::String (d.pattern + 1) + " // " + look::pad (sounding, 2) + " OF 08 TRACKS PLAYING";
         }
+        if (const int index = bassIndex (tool); index >= 0)
+        {
+            const auto& b = proc.getStudioState().bass[(size_t) index];
+            int sounding = 0;
+            for (const auto& row : b.rows)
+                for (float v : row.velocity[(size_t) b.pattern])
+                    if (v > 0.0f)
+                    {
+                        ++sounding;
+                        break;
+                    }
+            return "P" + juce::String (b.pattern + 1) + " // " + keyName (b.key) + " " + scaleName (b.scale) + " // "
+                   + look::pad (sounding, 2) + " OF 08 ROWS";
+        }
         return {};
     }
 
     ModularSynthEditor& editor;
     const int tool;
-    DataButton addButton { "+ ADD" }, showButton { "OPEN" }, removeButton { "REMOVE" }, muteButton { "M" }, soloButton { "S" };
+    DataButton showButton { "OPEN" }, removeButton { "REMOVE" }, muteButton { "M" }, soloButton { "S" };
     DataSlider level;
-    int shownActive = -1; // nothing shown yet
 };
 
 // =============================================================================
@@ -331,6 +324,18 @@ ModularSynthEditor::ModularSynthEditor (ModularSynthProcessor& p) : AudioProcess
     master = std::make_unique<MasterPanel> (*this);
     addAndMakeVisible (*master);
 
+    addAndMakeVisible (addDrumsButton);
+    addAndMakeVisible (addBassButton);
+    addDrumsButton.onClick = [this] { addTool (kDrumTool); };
+    addBassButton.onClick = [this] {
+        for (int t = kFirstBassTool; t < kFirstBassTool + kMaxBassSynths; ++t)
+            if (! proc.getStudioState().tools[(size_t) t].active)
+            {
+                addTool (t);
+                return;
+            }
+    };
+
     for (auto* b : { &playButton, &stopButton, &recButton, &exportButton, &saveButton, &openButton })
         addAndMakeVisible (*b);
     recButton.setAccent (look::red);
@@ -367,7 +372,7 @@ ModularSynthEditor::ModularSynthEditor (ModularSynthProcessor& p) : AudioProcess
     setWantsKeyboardFocus (true);
     setResizable (true, true);
     setResizeLimits (1000, 560, 2600, 1700);
-    setSize (1240, 600);
+    setSize (1240, 640);
     startTimerHz (60);
 }
 
@@ -420,14 +425,28 @@ juce::Rectangle<int> ModularSynthEditor::defaultToolBounds (int tool) const
 
 void ModularSynthEditor::createToolWindow (int tool, juce::Rectangle<int> bounds)
 {
-    auto view = std::make_unique<DrumMachineView> (proc);
-    auto* raw = view.get();
-    view->onUnhandledKey = [this] (const juce::KeyPress& key) { return handleStudioKey (key); };
+    std::unique_ptr<juce::Component> content;
+    std::function<void()> tick;
+    auto keys = [this] (const juce::KeyPress& key) { return handleStudioKey (key); };
+    if (toolKind (tool) == ToolKind::Bass)
+    {
+        auto view = std::make_unique<BassSynthView> (proc, tool);
+        view->onUnhandledKey = keys;
+        tick = [raw = view.get()] { raw->tick(); };
+        content = std::move (view);
+    }
+    else
+    {
+        auto view = std::make_unique<DrumMachineView> (proc);
+        view->onUnhandledKey = keys;
+        tick = [raw = view.get()] { raw->tick(); };
+        content = std::move (view);
+    }
 
-    auto window = std::make_unique<ToolWindow> ("MODULAR-SYNTH // " + juce::String (look::pad (tool + 1, 2)) + " " + toolTitle (tool), std::move (view));
+    auto window = std::make_unique<ToolWindow> ("MODULAR-SYNTH // " + juce::String (look::pad (tool + 1, 2)) + " " + toolTitle (tool), std::move (content));
     window->setResizeLimits (1100, 720, 2600, 1700);
     window->setBounds (bounds);
-    window->onTick = [raw] { raw->tick(); };
+    window->onTick = std::move (tick);
     window->onLayoutChange = [this] { storeWindowLayout(); };
     windows[(size_t) tool] = std::move (window);
 }
@@ -474,7 +493,7 @@ void ModularSynthEditor::removeTool (int tool)
         safe->send (CommandType::RemoveTool, tool, 0, 0, 0.0f);
         safe->windows[(size_t) tool].reset();
         safe->storeWindowLayout();
-        safe->setStatus ("REMOVED THE " + name + " // ADD IT AGAIN FROM ITS ROW");
+        safe->setStatus ("REMOVED THE " + name + " // ADD A NEW ONE WITH THE + BUTTONS");
     });
 }
 
@@ -710,6 +729,15 @@ void ModularSynthEditor::timerCallback()
 
     proc.syncPatternFromEngine();
     const auto& studio = proc.getStudioState();
+    if (toolsMask() != shownTools)
+    {
+        // room for every strip: grow the window if it has to
+        const int needed = stripsBottom() + kMasterHeight + kStatusHeight + 8;
+        setResizeLimits (1000, needed, 2600, 1700);
+        if (getHeight() < needed)
+            setSize (getWidth(), needed);
+        resized();
+    }
     const double sr = proc.getEngineSampleRate();
     const bool recording = proc.isRecording();
 
@@ -720,7 +748,8 @@ void ModularSynthEditor::timerCallback()
             w.reset();
         if (w != nullptr && w->isVisible() && w->onTick)
             w->onTick();
-        strips[(size_t) t]->tick();
+        if (studio.tools[(size_t) t].active)
+            strips[(size_t) t]->tick();
     }
     master->refresh();
 
@@ -794,13 +823,16 @@ void ModularSynthEditor::paint (juce::Graphics& g)
     g.setColour (look::dim);
     g.drawText ("OPEN SHOWS A TOOL'S WINDOW // CLOSING THE WINDOW KEEPS IT PLAYING // REMOVE TAKES IT OUT OF THE PROJECT",
                 kMargin + 80, kHeaderHeight + 6, getWidth() - 2 * kMargin - 80, 16, juce::Justification::centredRight);
-    const int nextY = kHeaderHeight + kToolsLabelHeight + kNumToolSlots * kStripHeight;
+    const int nextY = stripsBottom() - kAddRowHeight;
     g.setColour (look::faint);
     g.fillRect (kMargin, nextY, getWidth() - 2 * kMargin, 1);
+    int freeBass = 0;
+    for (int t = kFirstBassTool; t < kFirstBassTool + kMaxBassSynths; ++t)
+        freeBass += proc.getStudioState().tools[(size_t) t].active ? 0 : 1;
     g.setColour (look::dim);
-    g.drawText ("02 BASS SYNTH // 8 SOUNDS, SCALE LOCK, ADSR, CHORUS // NEXT UPDATE", kMargin + 48, nextY + 8, 600, 14,
-                juce::Justification::centredLeft);
-    g.drawText ("03 LOOPER // AUDIO IN, LOOPS ON THE STUDIO CLOCK // AFTER THAT", kMargin + 48, nextY + 26, 600, 14,
+    g.drawText ("ADD // " + juce::String (freeBass) + " OF " + juce::String (kMaxBassSynths) + " BASS SYNTHS FREE",
+                kMargin + 48, nextY + 8, 300, 20, juce::Justification::centredLeft);
+    g.drawText ("03 LOOPER // AUDIO IN, LOOPS ON THE STUDIO CLOCK // NEXT UPDATE", kMargin + 48, nextY + 36, 600, 14,
                 juce::Justification::centredLeft);
 
     // status line
@@ -848,6 +880,44 @@ void ModularSynthEditor::resized()
     master->setBounds (area.removeFromBottom (kMasterHeight).reduced (kMargin, 0));
 
     area.removeFromTop (kToolsLabelHeight);
-    for (auto& s : strips)
-        s->setBounds (area.removeFromTop (kStripHeight).reduced (kMargin, 0));
+    const auto& studio = proc.getStudioState();
+    shownTools = toolsMask();
+    for (int t = 0; t < kNumToolSlots; ++t)
+    {
+        const bool active = studio.tools[(size_t) t].active;
+        strips[(size_t) t]->setVisible (active);
+        if (active)
+            strips[(size_t) t]->setBounds (area.removeFromTop (kStripHeight).reduced (kMargin, 0));
+    }
+
+    // the add row: a button for each tool there is room for
+    auto add = area.removeFromTop (kAddRowHeight).reduced (kMargin, 0).withTrimmedLeft (290).withTrimmedTop (10).withHeight (20);
+    addDrumsButton.setVisible (! studio.tools[(size_t) kDrumTool].active);
+    if (addDrumsButton.isVisible())
+    {
+        addDrumsButton.setBounds (add.removeFromLeft (150));
+        add.removeFromLeft (8);
+    }
+    bool freeBass = false;
+    for (int t = kFirstBassTool; t < kFirstBassTool + kMaxBassSynths; ++t)
+        freeBass = freeBass || ! studio.tools[(size_t) t].active;
+    addBassButton.setVisible (freeBass);
+    addBassButton.setBounds (add.removeFromLeft (150));
+}
+
+int ModularSynthEditor::toolsMask() const
+{
+    int mask = 0;
+    for (int t = 0; t < kNumToolSlots; ++t)
+        if (proc.getStudioState().tools[(size_t) t].active)
+            mask |= 1 << t;
+    return mask;
+}
+
+int ModularSynthEditor::stripsBottom() const
+{
+    int active = 0;
+    for (int t = 0; t < kNumToolSlots; ++t)
+        active += proc.getStudioState().tools[(size_t) t].active ? 1 : 0;
+    return kHeaderHeight + kToolsLabelHeight + active * kStripHeight + kAddRowHeight;
 }

@@ -81,7 +81,7 @@ juce::LookAndFeel& sharedLookAndFeel()
 
 const char* FxRackControls::groupName (int column)
 {
-    const char* groups[] = { "CRUSH > DISTORT > FILTER", "DELAY > REVERB", "GRAIN DELAY", "PSYCHOSIS // OTT x 6" };
+    const char* groups[] = { "CRUSH > DISTORT > FILTER", "DELAY > REVERB", "GRAIN DELAY", "CHORUS // PSYCHOSIS OTT x 6" };
     return groups[juce::jlimit (0, kColumns - 1, column)];
 }
 
@@ -96,7 +96,9 @@ void FxRackControls::attach (juce::Component& parent, std::function<FxParams()> 
         s.setLabel (fxParamName (i));
         s.setDefault (defaults[(size_t) i]);
         s.setSteps (fxParamSteps (i));
-        if (fxParamIsToggle (i))
+        if (i == fxChorusMode)
+            s.setToggle ("ENSEMBLE", "DOUBLER");
+        else if (fxParamIsToggle (i))
             s.setToggle ("MS", "NOTE");
         s.format = [shown, i] (float v) {
             // time readouts depend on their sync switch, so format the whole set
@@ -134,5 +136,5 @@ void FxRackControls::layout (const std::function<int (int)>& columnX, int y0, in
     column (0, { fxCrushBits, fxCrushRate, -1, fxDistDrive, fxDistType, fxDistTone, fxDistMix, -1, fxCutoff, fxResonance });
     column (1, { fxDelayTime, fxDelaySync, fxDelayFeedback, fxDelayMix, -1, fxReverbTime, fxReverbSync, fxReverbDamp, fxReverbMix });
     column (2, { fxGrainTime, fxGrainSize, fxGrainSync, fxGrainPitch, fxGrainSpray, fxGrainFeedback, fxGrainMix });
-    column (3, { fxPsyDepth, fxPsyStages, fxPsyTime, fxPsySync, fxPsyMix });
+    column (3, { fxChorusMode, fxChorusRate, fxChorusDepth, fxChorusMix, -1, fxPsyDepth, fxPsyStages, fxPsyTime, fxPsySync, fxPsyMix });
 }
