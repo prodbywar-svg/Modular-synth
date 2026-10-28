@@ -916,7 +916,7 @@ void testAutomationSaved()
     StudioState q;
     std::array<juce::String, kNumTracks> paths;
     CHECK (studioFromVar (juce::JSON::parse (juce::JSON::toString (studioToVar (s))), q, paths));
-    auto near = [] (float a, float b) { return std::abs (a - b) < 1.0e-3f; };
+    auto near = [] (float a, float b) { return std::abs (a - b) < 3.0e-3f; };
     CHECK (near (q.masterFxAuto.point (0, fxReverbMix, 3), 0.25f));
     CHECK (near (q.drums.tracks[2].fxAuto.point (1, fxDelayMix, 5), 0.5f));
     CHECK (near (q.drums.masterFxAuto.point (3, fxCutoff, 15), 0.75f));

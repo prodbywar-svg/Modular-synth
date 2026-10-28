@@ -44,9 +44,11 @@ public:
 #endif
 
 private:
-    static constexpr std::uint16_t kUnset = 0xffff;
-    static constexpr float kScale = 65534.0f;
-    std::array<std::array<std::array<std::uint16_t, kNumSteps>, kNumFxParams>, kNumPatterns> points {};
+    // one byte a point keeps the studio state small enough to copy around
+    // (a recording's start, undo); the glide between points smooths the steps
+    static constexpr std::uint8_t kUnset = 0xff;
+    static constexpr float kScale = 254.0f;
+    std::array<std::array<std::array<std::uint8_t, kNumSteps>, kNumFxParams>, kNumPatterns> points {};
 };
 
 // Index of a point in SetFxAuto commands, and back.

@@ -98,6 +98,13 @@ target_link_libraries(ModularSynth
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)
 
+# The studio state is copied whole (a recording's start, undo, opening a
+# project), so give every thread room for it on Windows, whose default stack
+# is only 1 MB.
+if(MSVC)
+    target_link_options(ModularSynth_Standalone PRIVATE /STACK:16777216)
+endif()
+
 # ---------------------------------------------------------------- tests
 if(MS_BUILD_TESTS)
     juce_add_console_app(EngineTests PRODUCT_NAME "EngineTests")
@@ -110,4 +117,7 @@ if(MS_BUILD_TESTS)
     target_link_libraries(EngineTests
         PRIVATE ${ENGINE_MODULES}
         PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+    if(MSVC)
+        target_link_options(EngineTests PRIVATE /STACK:16777216)
+    endif()
 endif()

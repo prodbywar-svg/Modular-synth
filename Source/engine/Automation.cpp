@@ -18,7 +18,7 @@ void FxAutomation::set (int pattern, int param, int step, float value)
     if (! validPattern (pattern) || ! validParam (param) || step < 0 || step >= kNumSteps)
         return;
     points[(size_t) pattern][(size_t) param][(size_t) step] =
-        value < 0.0f ? kUnset : (std::uint16_t) std::lround (std::clamp (value, 0.0f, 1.0f) * kScale);
+        value < 0.0f ? kUnset : (std::uint8_t) std::lround (std::clamp (value, 0.0f, 1.0f) * kScale);
 }
 
 void FxAutomation::clear (int pattern, int param)
