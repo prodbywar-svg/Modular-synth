@@ -1,5 +1,6 @@
 #pragma once
 
+#include "BassEngine.h"
 #include "EngineCore.h"
 #include "StudioState.h"
 
@@ -34,6 +35,16 @@ public:
     // ---- read-outs ---------------------------------------------------------
     EngineCore& drums() { return drumEngine; }
     const EngineCore& drums() const { return drumEngine; }
+    BassEngine& bass (int index) { return bassEngines[(size_t) index]; }
+    // A track (drum or bass row) of a tool: peak, output, hit since clearTriggered().
+    float trackPeak (int tool, int track) const;
+    const float* trackOutput (int tool, int track) const;
+    bool trackTriggered (int tool, int track) const;
+    void clearTriggered();
+    // The tool's own bus, before the studio master.
+    float busPeak (int tool) const;
+    int toolPattern (int tool) const;
+    int toolQueuedPattern (int tool) const;
     int currentStep() const { return step; }
     float toolPeak (int tool) const { return validTool (tool) ? toolPeaks[(size_t) tool] : 0.0f; }
     float masterPeak() const { return masterPeakValue; }
@@ -46,9 +57,10 @@ private:
 
     double sr = 48000.0;
     int maxBlock = 512;
-    StudioState studio = makeDefaultStudio(); // the drums live in drumEngine
+    StudioState studio = makeDefaultStudio(); // the tools' own state lives in their engines
 
     EngineCore drumEngine;
+    std::array<BassEngine, kMaxBassSynths> bassEngines;
     FxChain masterFx;
     std::vector<float> toolL, toolR;
 

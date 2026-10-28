@@ -5,7 +5,7 @@ using namespace ms;
 namespace
 {
 constexpr int kHeaderHeight = 84;
-constexpr int kMasterHeight = 232;
+constexpr int kMasterHeight = 250;
 constexpr int kStatusHeight = 24;
 constexpr int kMargin = 16;
 constexpr int kStripHeight = 64;

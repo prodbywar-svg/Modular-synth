@@ -95,6 +95,14 @@ enum class CommandType : std::uint8_t
     RemoveTool,  // tool
     SetToolMute, // tool, value 0/1
     SetToolSolo, // tool, value 0/1
+    // The bass synth (see BassState.h). Trigger plays a note there: track =
+    // row, index = MIDI note, value = velocity.
+    NoteOff,     // track = row: lets go of a note played live
+    SetNote,     // track = row, index = pattern * kNumSteps + step, value = MIDI note
+    SetLength,   // track = row, index as SetNote, value = steps held (1..16)
+    SetCable,    // track = row, index = the row its cable goes to, -1 = unplug
+    SetKey,      // index = 0 (C) .. 11 (B); notes move into the scale
+    SetScale,    // index = scale; notes move into the scale
 };
 
 // Which part of the studio a command is for. Drum commands default to the drum

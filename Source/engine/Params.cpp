@@ -144,6 +144,11 @@ const ParamSpec kFxSpecs[kNumFxParams] = {
     { "PSY TIME",  Curve::Exp,  5.0f,  1000.0f,  "ms",  0.40f },
     { "PSY SYNC",  Curve::Toggle, 0.0f, 1.0f,    "",    0.00f },
     { "PSY MIX",   Curve::Lin,  0.0f,  1.0f,     "",    0.00f },
+
+    { "CHR MODE",  Curve::Toggle, 0.0f, 1.0f,    "mode", 0.00f },
+    { "CHR RATE",  Curve::Exp,  0.05f, 5.0f,     "Hz",  0.55f },
+    { "CHR DEPTH", Curve::Lin,  0.0f,  1.0f,     "",    0.50f },
+    { "CHR MIX",   Curve::Lin,  0.0f,  1.0f,     "",    0.00f },
 };
 // clang-format on
 
@@ -238,7 +243,7 @@ void formatSpec (const ParamSpec& s, float v, char* out, int outSize, VoiceType 
             std::snprintf (out, (size_t) outSize, "%s %.1f Hz", note, x);
     }
     else if (std::strcmp (u, "Hz") == 0)
-        std::snprintf (out, (size_t) outSize, x >= 1000.0f ? "%.2f kHz" : "%.1f Hz", x >= 1000.0f ? x / 1000.0f : x);
+        std::snprintf (out, (size_t) outSize, x >= 1000.0f ? "%.2f kHz" : x < 10.0f ? "%.2f Hz" : "%.1f Hz", x >= 1000.0f ? x / 1000.0f : x);
     else if (std::strcmp (u, "ms") == 0)
         formatMs (x, out, outSize);
     else if (std::strcmp (u, "bit") == 0)
@@ -257,6 +262,8 @@ void formatSpec (const ParamSpec& s, float v, char* out, int outSize, VoiceType 
         std::snprintf (out, (size_t) outSize, "%s", kDistTypes[std::clamp ((int) x, 0, 3)]);
     else if (std::strcmp (u, "stg") == 0)
         std::snprintf (out, (size_t) outSize, "%d x OTT", (int) x);
+    else if (std::strcmp (u, "mode") == 0)
+        std::snprintf (out, (size_t) outSize, "%s", x > 0.5f ? "DOUBLER" : "ENSEMBLE");
     else if (s.curve == Curve::Toggle)
         std::snprintf (out, (size_t) outSize, "%s", x > 0.5f ? "NOTE" : "MS");
     else

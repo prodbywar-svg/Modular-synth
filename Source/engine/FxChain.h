@@ -7,8 +7,8 @@
 
 namespace ms
 {
-// Stereo effects rack, in order: bitcrusher -> distortion -> filter -> delay ->
-// grain delay -> reverb -> Psychosis. Used on every track and on the master.
+// Stereo effects rack, in order: bitcrusher -> distortion -> filter -> chorus ->
+// delay -> grain delay -> reverb -> Psychosis. Used on every track and on the master.
 // Each stage is skipped while it is switched off.
 class FxChain
 {
@@ -41,6 +41,9 @@ private:
     // filter
     bool filterOn = false;
     Svf filterL, filterR;
+
+    bool chorusOn = false;
+    Chorus chorus;
 
     // delay
     bool delayOn = false;

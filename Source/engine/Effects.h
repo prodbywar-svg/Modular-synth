@@ -67,6 +67,28 @@ private:
     float damp = 0.3f, mix = 0.0f;
 };
 
+// Chorus with two modes. ENSEMBLE: three slowly moving copies per side, the
+// lush string-machine thickening. DOUBLER: one short, slightly drifting copy
+// per side, crossed over, like a second take of the same part.
+class Chorus
+{
+public:
+    void prepare (double sampleRate);
+    void reset();
+    void set (bool doubler, float rateHz, float depth, float mix);
+    void process (float* left, float* right, int numSamples);
+
+private:
+    float read (const std::vector<float>& buf, float delaySamples) const;
+
+    double sr = 48000.0;
+    std::vector<float> bufL, bufR;
+    int writePos = 0;
+    double phase = 0.0, phaseInc = 0.0;
+    bool doubler = false;
+    float depth = 0.5f, mix = 0.0f;
+};
+
 // "Psychosis": up to six OTT-style stages in series. Each stage splits the
 // signal into low / mid / high bands and squashes every band both downwards
 // (loud parts) and upwards (quiet parts), which drags up detail and tails.

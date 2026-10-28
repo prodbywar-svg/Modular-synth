@@ -17,8 +17,32 @@ void resetTool (StudioState& s, int tool)
         s.drums.bpm = s.bpm;
         s.drums.swing = s.swing;
     }
+    else if (const int b = bassIndex (tool); b >= 0)
+    {
+        s.bass[(size_t) b] = makeDefaultBass();
+        s.bass[(size_t) b].bpm = s.bpm;
+        s.bass[(size_t) b].swing = s.swing;
+    }
 }
+
+const char* const kToolNames[kNumToolSlots] = { "DRUMS", "BASS-1", "BASS-2", "BASS-3", "BASS-4" };
+const char* const kToolTitles[kNumToolSlots] = { "DRUM MACHINE", "BASS SYNTH 1", "BASS SYNTH 2", "BASS SYNTH 3", "BASS SYNTH 4" };
 } // namespace
+
+std::array<ToolMix, kNumToolSlots> StudioState::defaultToolMix()
+{
+    std::array<ToolMix, kNumToolSlots> t {};
+    t[(size_t) kDrumTool].active = true;
+    t[(size_t) kFirstBassTool].active = true;
+    return t;
+}
+
+std::array<BassState, kMaxBassSynths> StudioState::defaultBassSynths()
+{
+    std::array<BassState, kMaxBassSynths> b;
+    b.fill (makeDefaultBass());
+    return b;
+}
 
 StudioState makeDefaultStudio()
 {
@@ -34,24 +58,23 @@ StudioState studioWithDrums (const ProjectState& drums)
     s.drums = drums;
     s.bpm = drums.bpm;
     s.swing = drums.swing;
+    for (auto& b : s.bass)
+    {
+        b.bpm = s.bpm;
+        b.swing = s.swing;
+    }
+    for (int t = 0; t < kNumToolSlots; ++t)
+        s.tools[(size_t) t].active = t == kDrumTool;
     return s;
 }
 
 ToolKind toolKind (int tool)
 {
-    (void) tool;
-    return ToolKind::Drums;
+    return bassIndex (tool) >= 0 ? ToolKind::Bass : ToolKind::Drums;
 }
 
-const char* toolName (int tool)
-{
-    switch (toolKind (tool))
-    {
-        case ToolKind::Drums: return "DRUMS";
-        case ToolKind::Count: break;
-    }
-    return "TOOL";
-}
+const char* toolName (int tool) { return kToolNames[std::clamp (tool, 0, kNumToolSlots - 1)]; }
+const char* toolTitle (int tool) { return kToolTitles[std::clamp (tool, 0, kNumToolSlots - 1)]; }
 
 bool validTool (int tool) { return tool >= 0 && tool < kNumToolSlots; }
 
@@ -74,12 +97,16 @@ void applyToStudio (StudioState& s, const Command& c)
     {
         s.bpm = std::clamp (c.value, kMinBpm, kMaxBpm);
         applyToState (s.drums, c);
+        for (auto& b : s.bass)
+            applyToBass (b, c);
         return;
     }
     if (c.type == CommandType::SetSwing)
     {
         s.swing = clamp01 (c.value);
         applyToState (s.drums, c);
+        for (auto& b : s.bass)
+            applyToBass (b, c);
         return;
     }
     if (c.type == CommandType::AddTool)
@@ -87,6 +114,7 @@ void applyToStudio (StudioState& s, const Command& c)
         if (mix != nullptr && ! mix->active)
         {
             *mix = ToolMix {};
+            mix->active = true;
             resetTool (s, c.tool);
         }
         return;
@@ -96,7 +124,6 @@ void applyToStudio (StudioState& s, const Command& c)
         if (mix != nullptr)
         {
             *mix = ToolMix {};
-            mix->active = false;
         }
         return;
     }
@@ -118,6 +145,8 @@ void applyToStudio (StudioState& s, const Command& c)
 
     if (c.tool == kDrumTool)
         applyToState (s.drums, c);
+    else if (const int b = bassIndex (c.tool); b >= 0)
+        applyToBass (s.bass[(size_t) b], c);
 }
 
 #if ! MS_NO_JUCE
@@ -144,6 +173,8 @@ juce::var studioToVar (const StudioState& s)
         o->setProperty ("solo", mix.solo);
         if (toolKind (t) == ToolKind::Drums)
             o->setProperty ("state", projectToVar (s.drums));
+        else if (const int b = bassIndex (t); b >= 0)
+            o->setProperty ("state", bassToVar (s.bass[(size_t) b]));
         tools.add (juce::var (o.release()));
     }
     root->setProperty ("tools", tools);
@@ -188,11 +219,18 @@ bool studioFromVar (const juce::var& v, StudioState& out, std::array<juce::Strin
             mix.solo = (bool) o.getProperty ("solo", false);
             if (toolKind (t) == ToolKind::Drums && ! projectFromVar (o.getProperty ("state", {}), s.drums, drumSamplePaths))
                 s.drums = makeDefaultProject();
+            if (const int b = bassIndex (t); b >= 0 && ! bassFromVar (o.getProperty ("state", {}), s.bass[(size_t) b]))
+                s.bass[(size_t) b] = makeDefaultBass();
         }
     }
 
     s.drums.bpm = s.bpm;
     s.drums.swing = s.swing;
+    for (auto& b : s.bass)
+    {
+        b.bpm = s.bpm;
+        b.swing = s.swing;
+    }
     out = s;
     return true;
 }
