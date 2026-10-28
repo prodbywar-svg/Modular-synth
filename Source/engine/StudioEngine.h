@@ -1,0 +1,63 @@
+#pragma once
+
+#include "EngineCore.h"
+#include "StudioState.h"
+
+namespace ms
+{
+// Every tool in the studio, on one clock, summed through the studio master
+// rack. Like EngineCore it knows nothing about devices, threads or files.
+class StudioEngine
+{
+public:
+    void prepare (double sampleRate, int maxBlockSize);
+
+    // Silences every tool, clears effect tails and rewinds the clock.
+    void reset();
+
+    StudioState state() const;
+    void setState (const StudioState&);
+
+    void apply (const Command&);
+
+    void setPlaying (bool shouldPlay);
+    bool isPlaying() const { return playing; }
+
+    // What process() renders: tool -1 is the full mix. A tool renders only its
+    // share of the mix (through the studio master rack); with a track as well,
+    // only that track of the tool. One stem each.
+    void setSoloRender (int tool, int track = -1);
+
+    // Overwrites left/right with numSamples of output.
+    void process (float* left, float* right, int numSamples);
+
+    // ---- read-outs ---------------------------------------------------------
+    EngineCore& drums() { return drumEngine; }
+    const EngineCore& drums() const { return drumEngine; }
+    int currentStep() const { return step; }
+    float toolPeak (int tool) const { return validTool (tool) ? toolPeaks[(size_t) tool] : 0.0f; }
+    float masterPeak() const { return masterPeakValue; }
+    double getSampleRate() const { return sr; }
+    double samplesPerStep() const { return sr * 60.0 / (double) studio.bpm / 4.0; }
+
+private:
+    void processTool (int tool, float* left, float* right, int numSamples);
+    void addTool (int tool);
+
+    double sr = 48000.0;
+    int maxBlock = 512;
+    StudioState studio = makeDefaultStudio(); // the drums live in drumEngine
+
+    EngineCore drumEngine;
+    FxChain masterFx;
+    std::vector<float> toolL, toolR;
+
+    bool playing = false;
+    int step = 0;
+    double stepPhase = 0.0;
+    int soloTool = -1;
+
+    std::array<float, kNumToolSlots> toolPeaks {};
+    float masterPeakValue = 0.0f;
+};
+} // namespace ms

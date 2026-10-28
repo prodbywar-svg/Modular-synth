@@ -31,7 +31,7 @@ ModularSynthProcessor::ModularSynthProcessor()
 
 void ModularSynthProcessor::send (const Command& c)
 {
-    applyToState (uiState, c);
+    applyToStudio (uiState, c);
 
     const auto scope = fifo.write (1);
     if (scope.blockSize1 > 0)
@@ -42,43 +42,63 @@ void ModularSynthProcessor::send (const Command& c)
         jassertfalse; // queue full: the audio thread has stalled
 }
 
-void ModularSynthProcessor::replaceProject (const ProjectState& p)
+void ModularSynthProcessor::replaceStudio (const StudioState& s)
 {
-    auto cmd = [this] (CommandType type, int track, int index, float value, const SampleData* s = nullptr) {
+    auto cmd = [this] (CommandType type, int tool, int track, int index, float value, const SampleData* sample = nullptr) {
         Command c;
         c.type = type;
+        c.tool = tool;
         c.track = track;
         c.index = index;
         c.value = value;
-        c.sample = s;
+        c.sample = sample;
         send (c);
     };
 
+    // tools come and go first: adding one starts it from its default sound
+    for (int t = 0; t < kNumToolSlots; ++t)
+    {
+        const bool want = s.tools[(size_t) t].active;
+        if (want && ! uiState.tools[(size_t) t].active)
+            cmd (CommandType::AddTool, t, 0, 0, 0.0f);
+        else if (! want)
+            cmd (CommandType::RemoveTool, t, 0, 0, 0.0f);
+    }
+
+    const auto& p = s.drums;
     for (int t = 0; t < kNumTracks; ++t)
     {
         const auto& tr = p.tracks[(size_t) t];
-        cmd (CommandType::SetVoiceType, t, (int) tr.voice, 0.0f);
-        cmd (CommandType::SetCharacter, t, (int) tr.character, 0.0f);
+        cmd (CommandType::SetVoiceType, kDrumTool, t, (int) tr.voice, 0.0f);
+        cmd (CommandType::SetCharacter, kDrumTool, t, (int) tr.character, 0.0f);
         for (int i = 0; i < kNumVoiceParams; ++i)
-            cmd (CommandType::SetVoiceParam, t, i, tr.voiceParams[(size_t) i]);
-        cmd (CommandType::SetLevel, t, 0, tr.level);
-        cmd (CommandType::SetPan, t, 0, tr.pan);
-        cmd (CommandType::SetMute, t, 0, tr.mute ? 1.0f : 0.0f);
-        cmd (CommandType::SetSolo, t, 0, tr.solo ? 1.0f : 0.0f);
+            cmd (CommandType::SetVoiceParam, kDrumTool, t, i, tr.voiceParams[(size_t) i]);
+        cmd (CommandType::SetLevel, kDrumTool, t, 0, tr.level);
+        cmd (CommandType::SetPan, kDrumTool, t, 0, tr.pan);
+        cmd (CommandType::SetMute, kDrumTool, t, 0, tr.mute ? 1.0f : 0.0f);
+        cmd (CommandType::SetSolo, kDrumTool, t, 0, tr.solo ? 1.0f : 0.0f);
         for (int i = 0; i < kNumFxParams; ++i)
-            cmd (CommandType::SetFxParam, t, i, tr.fx[(size_t) i]);
+            cmd (CommandType::SetFxParam, kDrumTool, t, i, tr.fx[(size_t) i]);
         for (int pat = 0; pat < kNumPatterns; ++pat)
-            for (int s = 0; s < kNumSteps; ++s)
-                cmd (CommandType::SetStep, t, pat * kNumSteps + s, tr.patterns[(size_t) pat][(size_t) s]);
-        cmd (CommandType::SetSample, t, 0, 0.0f, tr.sample);
+            for (int st = 0; st < kNumSteps; ++st)
+                cmd (CommandType::SetStep, kDrumTool, t, pat * kNumSteps + st, tr.patterns[(size_t) pat][(size_t) st]);
+        cmd (CommandType::SetSample, kDrumTool, t, 0, 0.0f, tr.sample);
     }
-
-    cmd (CommandType::SelectPattern, 0, p.pattern, 0.0f);
-    cmd (CommandType::SetBpm, 0, 0, p.bpm);
-    cmd (CommandType::SetSwing, 0, 0, p.swing);
-    cmd (CommandType::SetMasterLevel, 0, 0, p.masterLevel);
+    cmd (CommandType::SelectPattern, kDrumTool, 0, p.pattern, 0.0f);
+    cmd (CommandType::SetMasterLevel, kDrumTool, 0, 0, p.masterLevel);
     for (int i = 0; i < kNumFxParams; ++i)
-        cmd (CommandType::SetFxParam, -1, i, p.masterFx[(size_t) i]);
+        cmd (CommandType::SetFxParam, kDrumTool, -1, i, p.masterFx[(size_t) i]);
+
+    cmd (CommandType::SetBpm, kStudio, 0, 0, s.bpm);
+    cmd (CommandType::SetSwing, kStudio, 0, 0, s.swing);
+    cmd (CommandType::SetMasterLevel, kStudio, 0, 0, s.masterLevel);
+    for (int i = 0; i < kNumFxParams; ++i)
+        cmd (CommandType::SetFxParam, kStudio, 0, i, s.masterFx[(size_t) i]);
+    for (int t = 0; t < kNumToolSlots; ++t)
+    {
+        cmd (CommandType::SetToolMute, t, 0, 0, s.tools[(size_t) t].mute ? 1.0f : 0.0f);
+        cmd (CommandType::SetToolSolo, t, 0, 0, s.tools[(size_t) t].solo ? 1.0f : 0.0f);
+    }
 }
 
 const SampleData* ModularSynthProcessor::loadSample (const juce::File& file, juce::String& error)
@@ -116,37 +136,47 @@ const SampleData* ModularSynthProcessor::loadSample (const juce::File& file, juc
 
 bool ModularSynthProcessor::saveProject (const juce::File& file)
 {
-    return file.replaceWithText (juce::JSON::toString (projectToVar (uiState)));
+    auto v = studioToVar (uiState);
+    if (auto* o = v.getDynamicObject())
+        o->setProperty ("windows", windowLayout);
+    return file.replaceWithText (juce::JSON::toString (v));
 }
 
-bool ModularSynthProcessor::openProject (const juce::File& file, juce::String& error)
+void ModularSynthProcessor::loadSamplePaths (StudioState& s, const std::array<juce::String, kNumTracks>& paths, juce::String& error)
 {
-    ProjectState p;
-    std::array<juce::String, kNumTracks> paths;
-    if (! projectFromVar (juce::JSON::parse (file), p, paths))
-    {
-        error = file.getFileName() + " is not a Modular-synth project";
-        return false;
-    }
-
     for (int t = 0; t < kNumTracks; ++t)
     {
         const auto& path = paths[(size_t) t];
         if (path.isEmpty())
             continue;
         juce::String sampleError;
-        p.tracks[(size_t) t].sample = loadSample (juce::File (path), sampleError);
-        if (p.tracks[(size_t) t].sample == nullptr)
+        s.drums.tracks[(size_t) t].sample = loadSample (juce::File (path), sampleError);
+        if (s.drums.tracks[(size_t) t].sample == nullptr)
             error = "Missing sample: " + path;
     }
+}
 
-    replaceProject (p);
+bool ModularSynthProcessor::openProject (const juce::File& file, juce::String& error)
+{
+    const auto v = juce::JSON::parse (file);
+    StudioState s;
+    std::array<juce::String, kNumTracks> paths;
+    if (! studioFromVar (v, s, paths))
+    {
+        error = file.getFileName() + " is not a Modular-synth project";
+        return false;
+    }
+
+    loadSamplePaths (s, paths, error);
+    replaceStudio (s);
+    windowLayout = v.getProperty ("windows", {});
+    ++windowLayoutVersion;
     return true;
 }
 
 juce::String ModularSynthProcessor::trackName (int track) const
 {
-    const auto& tr = uiState.tracks[(size_t) track];
+    const auto& tr = uiState.drums.tracks[(size_t) track];
     if (tr.voice == VoiceType::Sample && tr.sample != nullptr)
         return juce::File (tr.sample->path).getFileNameWithoutExtension().toUpperCase();
     return drumName (tr.voice, tr.character);
@@ -166,12 +196,18 @@ void ModularSynthProcessor::syncPatternFromEngine()
 {
     // The engine switches to a queued pattern on its own at the end of a bar;
     // mirror that once it has happened.
-    const int queued = uiState.queuedPattern;
+    const int queued = uiState.drums.queuedPattern;
     if (queued >= 0 && queuedPatternIndex.load() < 0 && currentPatternIndex.load() == queued)
     {
-        uiState.pattern = queued;
-        uiState.queuedPattern = -1;
+        uiState.drums.pattern = queued;
+        uiState.drums.queuedPattern = -1;
     }
+}
+
+float ModularSynthProcessor::toolHistory (int tool, int age) const
+{
+    const int pos = (historyPos.load() - 1 - age + kHistoryLength * 4) % kHistoryLength;
+    return toolHistoryValues[(size_t) (tool * kHistoryLength + pos)].load (std::memory_order_relaxed);
 }
 
 float ModularSynthProcessor::trackHistory (int t, int age) const
@@ -289,6 +325,7 @@ void ModularSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
             {
                 Command c;
                 c.type = CommandType::Trigger;
+                c.tool = kDrumTool;
                 c.track = pad;
                 c.value = msg.getFloatVelocity();
                 handleOnAudioThread (c);
@@ -302,7 +339,8 @@ void ModularSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
     float* left = buffer.getWritePointer (0);
     float* right = buffer.getNumChannels() > 1 ? buffer.getWritePointer (1) : nullptr;
     std::array<float, kHistoryWindow> scratch {};
-    float blockMasterPeak = 0.0f;
+    float blockMasterPeak = 0.0f, blockDrumPeak = 0.0f;
+    auto& drums = engine.drums();
 
     for (int offset = 0; offset < numSamples;)
     {
@@ -311,20 +349,27 @@ void ModularSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
         offset += n;
         windowFill += n;
         blockMasterPeak = juce::jmax (blockMasterPeak, engine.masterPeak());
+        blockDrumPeak = juce::jmax (blockDrumPeak, drums.masterPeak());
+
+        for (int tool = 0; tool < kNumToolSlots; ++tool)
+        {
+            toolWindowPeak[(size_t) tool] = juce::jmax (toolWindowPeak[(size_t) tool], engine.toolPeak (tool));
+            toolPeaks[(size_t) tool].store (engine.toolPeak (tool), std::memory_order_relaxed);
+        }
 
         for (int t = 0; t < kNumTracks; ++t)
         {
-            windowPeak[(size_t) t] = juce::jmax (windowPeak[(size_t) t], engine.trackPeak (t));
-            trackPeaks[(size_t) t].store (engine.trackPeak (t), std::memory_order_relaxed);
-            if (engine.trackTriggered (t))
+            windowPeak[(size_t) t] = juce::jmax (windowPeak[(size_t) t], drums.trackPeak (t));
+            trackPeaks[(size_t) t].store (drums.trackPeak (t), std::memory_order_relaxed);
+            if (drums.trackTriggered (t))
                 hitCounts[(size_t) t].fetch_add (1, std::memory_order_relaxed);
         }
-        engine.clearTriggered();
+        drums.clearTriggered();
 
         const int scopeStart = scopePos.load (std::memory_order_relaxed);
         for (int t = 0; t < kNumTracks; ++t)
         {
-            const float* out = engine.trackOutput (t);
+            const float* out = drums.trackOutput (t);
             for (int i = 0; i < n; ++i)
                 scopeSamples[(size_t) (t * kScopeLength + (scopeStart + i) % kScopeLength)].store (out[i], std::memory_order_relaxed);
         }
@@ -337,6 +382,11 @@ void ModularSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
             {
                 history[(size_t) (t * kHistoryLength + pos)].store (windowPeak[(size_t) t], std::memory_order_relaxed);
                 windowPeak[(size_t) t] = 0.0f;
+            }
+            for (int tool = 0; tool < kNumToolSlots; ++tool)
+            {
+                toolHistoryValues[(size_t) (tool * kHistoryLength + pos)].store (toolWindowPeak[(size_t) tool], std::memory_order_relaxed);
+                toolWindowPeak[(size_t) tool] = 0.0f;
             }
             historyPos.store ((pos + 1) % kHistoryLength);
             windowFill = 0;
@@ -352,11 +402,12 @@ void ModularSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
         playedSampleCount += numSamples;
 
     masterPeakValue.store (blockMasterPeak, std::memory_order_relaxed);
+    drumBusPeakValue.store (blockDrumPeak, std::memory_order_relaxed);
     playingFlag = engine.isPlaying();
     recordingFlag = recording;
     stepIndex = engine.currentStep();
-    currentPatternIndex = engine.currentPattern();
-    queuedPatternIndex = engine.queuedPattern();
+    currentPatternIndex = drums.currentPattern();
+    queuedPatternIndex = drums.queuedPattern();
     recordedSampleCount = recordPosition;
 }
 
@@ -369,24 +420,26 @@ juce::AudioProcessorEditor* ModularSynthProcessor::createEditor()
 
 void ModularSynthProcessor::getStateInformation (juce::MemoryBlock& dest)
 {
-    const auto json = juce::JSON::toString (projectToVar (uiState));
+    auto v = studioToVar (uiState);
+    if (auto* o = v.getDynamicObject())
+        o->setProperty ("windows", windowLayout);
+    const auto json = juce::JSON::toString (v);
     dest.replaceAll (json.toRawUTF8(), json.getNumBytesAsUTF8());
 }
 
 void ModularSynthProcessor::setStateInformation (const void* data, int size)
 {
-    ProjectState p;
+    const auto v = juce::JSON::parse (juce::String::fromUTF8 ((const char*) data, size));
+    StudioState s;
     std::array<juce::String, kNumTracks> paths;
-    if (! projectFromVar (juce::JSON::parse (juce::String::fromUTF8 ((const char*) data, size)), p, paths))
+    if (! studioFromVar (v, s, paths))
         return;
 
-    for (int t = 0; t < kNumTracks; ++t)
-    {
-        juce::String error;
-        if (paths[(size_t) t].isNotEmpty())
-            p.tracks[(size_t) t].sample = loadSample (juce::File (paths[(size_t) t]), error);
-    }
-    replaceProject (p);
+    juce::String error;
+    loadSamplePaths (s, paths, error);
+    replaceStudio (s);
+    windowLayout = v.getProperty ("windows", {});
+    ++windowLayoutVersion;
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

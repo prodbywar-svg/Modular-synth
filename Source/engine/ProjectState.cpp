@@ -37,42 +37,6 @@ void readFloatArray (const juce::var& v, float* values, int count)
             values[i] = clamp01 ((float) (*a)[i]);
 }
 
-juce::var fxToVar (const FxParams& fx)
-{
-    auto o = std::make_unique<juce::DynamicObject>();
-    for (int i = 0; i < kNumFxParams; ++i)
-        o->setProperty (fxParamName (i), fx[(size_t) i]);
-    return juce::var (o.release());
-}
-
-void fxFromVar (const juce::var& v, FxParams& fx)
-{
-    if (auto* o = v.getDynamicObject())
-    {
-        for (const auto& prop : o->getProperties())
-        {
-            const int i = fxParamFromName (prop.name.toString().toRawUTF8());
-            if (i >= 0)
-                fx[(size_t) i] = clamp01 ((float) prop.value);
-        }
-    }
-    else if (auto* a = v.getArray())
-    {
-        // version 1 files: CUTOFF RESO BITS DOWNSMP DLY-TIME DLY-FDBK DLY-MIX REV-SIZE REV-MIX
-        auto at = [a] (int i) { return i < a->size() ? clamp01 ((float) (*a)[i]) : 0.0f; };
-        fx[fxCutoff] = at (0);
-        fx[fxResonance] = at (1);
-        fx[fxCrushBits] = at (2);
-        fx[fxCrushRate] = at (3);
-        const float oldDelayMs = 10.0f + at (4) * 990.0f;
-        fx[fxDelayTime] = clamp01 (std::log (oldDelayMs / 5.0f) / std::log (400.0f));
-        fx[fxDelaySync] = 0.0f;
-        fx[fxDelayFeedback] = at (5);
-        fx[fxDelayMix] = at (6);
-        fx[fxReverbTime] = clamp01 (0.2f + at (7) * 0.5f);
-        fx[fxReverbMix] = at (8);
-    }
-}
 #endif
 } // namespace
 
@@ -207,11 +171,52 @@ void applyToState (ProjectState& p, const Command& c)
         case CommandType::Stop:
         case CommandType::RecordStart:
         case CommandType::RecordStop:
+        case CommandType::AddTool:
+        case CommandType::RemoveTool:
+        case CommandType::SetToolMute:
+        case CommandType::SetToolSolo:
             break;
     }
 }
 
 #if ! MS_NO_JUCE
+juce::var fxToVar (const FxParams& fx)
+{
+    auto o = std::make_unique<juce::DynamicObject>();
+    for (int i = 0; i < kNumFxParams; ++i)
+        o->setProperty (fxParamName (i), fx[(size_t) i]);
+    return juce::var (o.release());
+}
+
+void fxFromVar (const juce::var& v, FxParams& fx)
+{
+    if (auto* o = v.getDynamicObject())
+    {
+        for (const auto& prop : o->getProperties())
+        {
+            const int i = fxParamFromName (prop.name.toString().toRawUTF8());
+            if (i >= 0)
+                fx[(size_t) i] = clamp01 ((float) prop.value);
+        }
+    }
+    else if (auto* a = v.getArray())
+    {
+        // version 1 files: CUTOFF RESO BITS DOWNSMP DLY-TIME DLY-FDBK DLY-MIX REV-SIZE REV-MIX
+        auto at = [a] (int i) { return i < a->size() ? clamp01 ((float) (*a)[i]) : 0.0f; };
+        fx[fxCutoff] = at (0);
+        fx[fxResonance] = at (1);
+        fx[fxCrushBits] = at (2);
+        fx[fxCrushRate] = at (3);
+        const float oldDelayMs = 10.0f + at (4) * 990.0f;
+        fx[fxDelayTime] = clamp01 (std::log (oldDelayMs / 5.0f) / std::log (400.0f));
+        fx[fxDelaySync] = 0.0f;
+        fx[fxDelayFeedback] = at (5);
+        fx[fxDelayMix] = at (6);
+        fx[fxReverbTime] = clamp01 (0.2f + at (7) * 0.5f);
+        fx[fxReverbMix] = at (8);
+    }
+}
+
 juce::var projectToVar (const ProjectState& p)
 {
     auto root = std::make_unique<juce::DynamicObject>();

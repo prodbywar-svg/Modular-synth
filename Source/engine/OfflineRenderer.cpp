@@ -14,12 +14,12 @@ constexpr double kSilentTailSeconds = 0.3;
 class TakePlayer
 {
 public:
-    TakePlayer (const Take& t, int soloTrack) : take (t)
+    TakePlayer (const Take& t, Stem stem) : take (t)
     {
         engine.prepare (take.sampleRate, kBlock);
         engine.setState (take.start);
         engine.reset();
-        engine.setSoloRender (soloTrack);
+        engine.setSoloRender (stem.tool, stem.track);
         engine.setPlaying (take.length > 0);
     }
 
@@ -47,7 +47,7 @@ public:
 
 private:
     const Take& take;
-    EngineCore engine;
+    StudioEngine engine;
     size_t nextEvent = 0;
     std::int64_t position = 0;
 };
@@ -76,22 +76,27 @@ juce::String safeName (const juce::String& s)
 }
 } // namespace
 
-Take makePatternTake (const ProjectState& state, int loops, double sampleRate, int pattern)
+Take makePatternTake (const StudioState& state, int loops, double sampleRate, int pattern)
 {
     Take t;
     t.start = state;
-    t.start.pattern = pattern >= 0 ? pattern : viewedPattern (state);
-    t.start.queuedPattern = -1;
+    t.start.drums.pattern = pattern >= 0 ? pattern : viewedPattern (state.drums);
+    t.start.drums.queuedPattern = -1;
     t.sampleRate = sampleRate;
     const double stepLen = sampleRate * 60.0 / (double) state.bpm / 4.0;
     t.length = (std::int64_t) std::llround (stepLen * kNumSteps * std::max (1, loops));
     return t;
 }
 
-void renderTake (const Take& take, int soloTrack, std::int64_t totalLength,
+Take makePatternTake (const ProjectState& drums, int loops, double sampleRate, int pattern)
+{
+    return makePatternTake (studioWithDrums (drums), loops, sampleRate, pattern);
+}
+
+void renderTake (const Take& take, Stem stem, std::int64_t totalLength,
                  const std::function<void (const float*, const float*, int)>& sink)
 {
-    TakePlayer player (take, soloTrack);
+    TakePlayer player (take, stem);
     std::vector<float> l (kBlock), r (kBlock);
 
     for (std::int64_t done = 0; done < totalLength;)
@@ -115,7 +120,32 @@ ExportResult exportTake (const Take& take, const ExportOptions& opt,
         return result;
     }
 
-    const int passes = 1 + kNumTracks;
+    // every stem after the master: each tool, then each of its tracks
+    struct StemFile
+    {
+        Stem stem;
+        juce::String name;
+    };
+    std::vector<StemFile> stems;
+    for (int tool = 0; tool < kNumToolSlots; ++tool)
+    {
+        if (! take.start.tools[(size_t) tool].active)
+            continue;
+        const juce::String toolPart = toolName (tool);
+        stems.push_back ({ { tool, -1 }, toolPart });
+        if (toolKind (tool) == ToolKind::Drums)
+        {
+            for (int t = 0; t < kNumTracks; ++t)
+            {
+                const auto& tr = take.start.drums.tracks[(size_t) t];
+                const auto name = opt.trackNames[(size_t) t].isNotEmpty() ? opt.trackNames[(size_t) t]
+                                                                          : juce::String (drumName (tr.voice, tr.character));
+                stems.push_back ({ { tool, t }, toolPart + "-" + juce::String (t + 1).paddedLeft ('0', 2) + "-" + safeName (name) });
+            }
+        }
+    }
+
+    const int passes = 1 + (int) stems.size();
     auto report = [&] (int pass, double fraction) {
         return ! progress || progress ((float) ((pass + juce::jlimit (0.0, 1.0, fraction)) / passes));
     };
@@ -134,7 +164,7 @@ ExportResult exportTake (const Take& take, const ExportOptions& opt,
     std::int64_t written = 0, silentRun = 0;
 
     {
-        TakePlayer player (take, -1);
+        TakePlayer player (take, Stem {});
         std::vector<float> l (kBlock), r (kBlock);
 
         while (written < maxLength)
@@ -165,14 +195,11 @@ ExportResult exportTake (const Take& take, const ExportOptions& opt,
     result.files.add (masterFile);
     result.lengthSamples = written;
 
-    // ---- passes 2..9: one stem per track, same length as the master -------
-    for (int t = 0; t < kNumTracks; ++t)
+    // ---- then every stem, the same length as the master -------------------
+    for (int pass = 0; pass < (int) stems.size(); ++pass)
     {
-        const auto& tr = take.start.tracks[(size_t) t];
-        const auto name = opt.trackNames[(size_t) t].isNotEmpty() ? opt.trackNames[(size_t) t]
-                                                                  : juce::String (drumName (tr.voice, tr.character));
-        const auto stemFile = opt.folder.getChildFile (opt.baseName + "_" + juce::String (t + 1).paddedLeft ('0', 2)
-                                                       + "-" + safeName (name) + ".wav");
+        const auto& stem = stems[(size_t) pass];
+        const auto stemFile = opt.folder.getChildFile (opt.baseName + "_" + stem.name + ".wav");
         auto stemWriter = makeWriter (stemFile, sr, opt.bitDepth);
         if (stemWriter == nullptr)
         {
@@ -183,13 +210,13 @@ ExportResult exportTake (const Take& take, const ExportOptions& opt,
         float stemPeak = 0.0f;
         std::int64_t done = 0;
         bool cancelled = false;
-        renderTake (take, t, written, [&] (const float* l, const float* r, int n) {
+        renderTake (take, stem.stem, written, [&] (const float* l, const float* r, int n) {
             const float* chans[] = { l, r };
             stemWriter->writeFromFloatArrays (chans, 2, n);
             for (int i = 0; i < n; ++i)
                 stemPeak = std::max ({ stemPeak, std::abs (l[i]), std::abs (r[i]) });
             done += n;
-            if (! cancelled && ! report (1 + t, (double) done / (double) written))
+            if (! cancelled && ! report (1 + pass, (double) done / (double) written))
                 cancelled = true;
         });
         stemWriter.reset();
@@ -200,7 +227,7 @@ ExportResult exportTake (const Take& take, const ExportOptions& opt,
             return result;
         }
 
-        // A track that never made a sound (muted, empty or silent) gets no file.
+        // A stem that never made a sound (muted, empty or silent) gets no file.
         if (stemPeak <= 0.0f)
             stemFile.deleteFile();
         else

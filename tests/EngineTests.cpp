@@ -2,6 +2,7 @@
 
 #include "engine/Hr16Bank.h"
 #include "engine/OfflineRenderer.h"
+#include "engine/StudioState.h"
 
 #include <cmath>
 #include <cstdio>
@@ -55,7 +56,7 @@ struct Rendered
 Rendered render (const Take& take, int solo, std::int64_t length)
 {
     Rendered out;
-    renderTake (take, solo, length, [&] (const float* l, const float* r, int n) {
+    renderTake (take, drumStem (solo), length, [&] (const float* l, const float* r, int n) {
         out.l.insert (out.l.end(), l, l + n);
         out.r.insert (out.r.end(), r, r + n);
     });
@@ -200,7 +201,7 @@ void testRecordedEventsReplay()
         p.tracks[2].patterns[0][(size_t) s] = 1.0f;
 
     Take take;
-    take.start = p;
+    take.start = studioWithDrums (p);
     take.sampleRate = kSr;
     take.length = (std::int64_t) kSr * 4;
 
@@ -271,11 +272,13 @@ void testExportFiles()
     CHECK (result.ok);
     CHECK (monotonic);
     CHECK (lastProgress > 0.99f);
-    // master + tracks 1,2,3,4,6 (5 is muted, 7 has no steps, 8 has no sample)
-    CHECK (result.files.size() == 6);
+    // master, the drum machine, tracks 1,2,3,4,6 (5 is muted, 7 has no steps,
+    // 8 has no sample)
+    CHECK (result.files.size() == 7);
     CHECK (folder.getChildFile ("test_Master.wav").existsAsFile());
-    CHECK (folder.getChildFile ("test_01-Kick.wav").existsAsFile());
-    CHECK (! folder.getChildFile ("test_05-GLITCH.wav").existsAsFile());
+    CHECK (folder.getChildFile ("test_DRUMS.wav").existsAsFile());
+    CHECK (folder.getChildFile ("test_DRUMS-01-Kick.wav").existsAsFile());
+    CHECK (! folder.getChildFile ("test_DRUMS-05-GLITCH.wav").existsAsFile());
     CHECK (result.lengthSamples > take.length); // reverb tail kept
     CHECK (result.lengthSamples < take.length + (std::int64_t) (kSr * 10.5));
 
@@ -459,6 +462,116 @@ void testPitchNames()
     std::printf ("  kick pitch snapped: %s\n", buf);
     CHECK (std::string (buf).find ('c') == std::string::npos); // no cents
 }
+
+Rendered renderStem (const Take& take, Stem stem, std::int64_t length)
+{
+    Rendered out;
+    renderTake (take, stem, length, [&] (const float* l, const float* r, int n) {
+        out.l.insert (out.l.end(), l, l + n);
+        out.r.insert (out.r.end(), r, r + n);
+    });
+    return out;
+}
+
+Command toolCommand (CommandType type, int tool, float value = 0.0f)
+{
+    Command c;
+    c.type = type;
+    c.tool = tool;
+    c.value = value;
+    return c;
+}
+
+void testStudioToolMixing()
+{
+    std::printf ("studio: tool mute, solo, remove and the master rack\n");
+    const auto studio = makeDefaultStudio();
+    const auto take = makePatternTake (studio, 1, kSr);
+    const auto master = renderStem (take, {}, take.length);
+    const auto drums = renderStem (take, { kDrumTool, -1 }, take.length);
+    CHECK (master.peak() > 0.1f);
+    // with one tool, the tool's stem is the whole mix
+    float diff = 0.0f;
+    for (size_t i = 0; i < master.l.size(); ++i)
+        diff = std::max (diff, std::abs (master.l[i] - drums.l[i]));
+    CHECK (diff < 1.0e-6f);
+
+    auto muted = studio;
+    muted.tools[kDrumTool].mute = true;
+    CHECK (renderStem (makePatternTake (muted, 1, kSr), {}, take.length).peak() <= 0.0f);
+
+    auto removed = studio;
+    applyToStudio (removed, toolCommand (CommandType::RemoveTool, kDrumTool));
+    CHECK (! removed.tools[kDrumTool].active);
+    CHECK (renderStem (makePatternTake (removed, 1, kSr), {}, take.length).peak() <= 0.0f);
+
+    auto quiet = studio;
+    quiet.masterLevel = 0.0f;
+    CHECK (renderStem (makePatternTake (quiet, 1, kSr), {}, take.length).peak() <= 0.0f);
+
+    // the studio master rack reaches every stem: a long reverb tail on the kick
+    auto wet = studio;
+    wet.masterFx[fxReverbMix] = 0.5f;
+    wet.masterFx[fxReverbTime] = 0.8f;
+    const auto wetTake = makePatternTake (wet, 1, kSr);
+    const auto dryKick = renderStem (take, { kDrumTool, 0 }, take.length * 2);
+    const auto wetKick = renderStem (wetTake, { kDrumTool, 0 }, take.length * 2);
+    CHECK (dryKick.onset (take.length + (std::int64_t) kSr / 2, 0.0005f) == -1);
+    CHECK (wetKick.onset (take.length + (std::int64_t) kSr / 2, 0.0005f) >= 0);
+}
+
+void testAddedToolJoinsTheBeat()
+{
+    std::printf ("studio: a drum machine added while playing lands on the beat\n");
+    auto studio = makeDefaultStudio();
+    applyToStudio (studio, toolCommand (CommandType::RemoveTool, kDrumTool));
+    auto take = makePatternTake (studio, 2, kSr);
+    const double stepLen = kSr * 60.0 / (double) studio.bpm / 4.0;
+    const auto addAt = (std::int64_t) (stepLen * 2.5); // halfway through step 3
+    take.events.push_back ({ addAt, toolCommand (CommandType::AddTool, kDrumTool) });
+
+    // the default kick plays steps 1, 5, 9, 11 and 13: the first one heard is step 5
+    const auto kick = renderStem (take, { kDrumTool, 0 }, take.length);
+    const auto expected = (std::int64_t) std::ceil (stepLen * 4.0);
+    std::printf ("  kick onset %lld expected %lld\n", (long long) kick.onset(), (long long) expected);
+    CHECK (std::llabs (kick.onset() - expected) <= 1);
+}
+
+void testStudioSaveAndOpen()
+{
+    std::printf ("studio projects save and open; drum machine projects still open\n");
+    auto s = makeDefaultStudio();
+    s.bpm = 141.0f;
+    s.masterLevel = 0.6f;
+    s.masterFx[fxDelayMix] = 0.4f;
+    s.tools[kDrumTool].solo = true;
+    s.drums.tracks[2].level = 0.3f;
+    s.drums.masterFx[fxReverbMix] = 0.2f;
+
+    StudioState q;
+    std::array<juce::String, kNumTracks> paths;
+    CHECK (studioFromVar (juce::JSON::parse (juce::JSON::toString (studioToVar (s))), q, paths));
+    CHECK (juce::exactlyEqual (q.bpm, 141.0f) && juce::exactlyEqual (q.drums.bpm, 141.0f));
+    CHECK (std::abs (q.masterLevel - 0.6f) < 1.0e-6f);
+    CHECK (std::abs (q.masterFx[fxDelayMix] - 0.4f) < 1.0e-6f);
+    CHECK (q.tools[kDrumTool].active && q.tools[kDrumTool].solo);
+    CHECK (std::abs (q.drums.tracks[2].level - 0.3f) < 1.0e-6f);
+    CHECK (std::abs (q.drums.masterFx[fxReverbMix] - 0.2f) < 1.0e-6f);
+
+    auto none = s;
+    applyToStudio (none, toolCommand (CommandType::RemoveTool, kDrumTool));
+    CHECK (studioFromVar (juce::JSON::parse (juce::JSON::toString (studioToVar (none))), q, paths));
+    CHECK (! q.tools[kDrumTool].active);
+
+    // a version 2 file is the drum machine, its master rack becomes the drum bus
+    auto old = makeDefaultProject();
+    old.bpm = 120.0f;
+    old.masterFx[fxCutoff] = 0.5f;
+    CHECK (studioFromVar (juce::JSON::parse (juce::JSON::toString (projectToVar (old))), q, paths));
+    CHECK (juce::exactlyEqual (q.bpm, 120.0f) && q.tools[kDrumTool].active);
+    CHECK (std::abs (q.drums.masterFx[fxCutoff] - 0.5f) < 1.0e-6f);
+    CHECK (q.masterFx == defaultFxParams());
+}
 } // namespace
 
 // EngineTests --demo <folder>: renders the starter patterns (master + stems)
@@ -527,6 +640,9 @@ int main (int argc, char** argv)
     testNoteSyncedDelay();
     testNewEffectsAreSane();
     testPitchNames();
+    testStudioToolMixing();
+    testAddedToolJoinsTheBeat();
+    testStudioSaveAndOpen();
 
     if (failures == 0)
         std::printf ("\nall engine tests passed\n");
