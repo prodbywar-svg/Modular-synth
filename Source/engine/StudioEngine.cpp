@@ -14,6 +14,8 @@ void StudioEngine::prepare (double sampleRate, int maxBlockSize)
     drumEngine.prepare (sr, maxBlock);
     for (auto& b : bassEngines)
         b.prepare (sr, maxBlock);
+    for (auto& l : looperEngines)
+        l.prepare (sr, maxBlock);
     masterFx.prepare (sr);
     reset();
 }
@@ -23,6 +25,8 @@ void StudioEngine::reset()
     drumEngine.reset();
     for (auto& b : bassEngines)
         b.reset();
+    for (auto& l : looperEngines)
+        l.reset();
     masterFx.setParams (studio.masterFx, studio.bpm);
     masterFx.reset();
     step = 0;
@@ -35,6 +39,8 @@ StudioState StudioEngine::state() const
     s.drums = drumEngine.state();
     for (int b = 0; b < kMaxBassSynths; ++b)
         s.bass[(size_t) b] = bassEngines[(size_t) b].state();
+    for (int l = 0; l < kMaxLoopers; ++l)
+        s.loopers[(size_t) l] = looperEngines[(size_t) l].state();
     return s;
 }
 
@@ -51,6 +57,13 @@ void StudioEngine::setState (const StudioState& s)
         bass.bpm = s.bpm;
         bass.swing = s.swing;
         bassEngines[(size_t) b].setState (bass);
+    }
+    for (int l = 0; l < kMaxLoopers; ++l)
+    {
+        auto looper = s.loopers[(size_t) l];
+        looper.bpm = s.bpm;
+        looper.swing = s.swing;
+        looperEngines[(size_t) l].setState (looper);
     }
 }
 
@@ -78,6 +91,14 @@ void StudioEngine::addTool (int tool)
         if (playing)
             engine.joinClock (step, stepPhase);
     }
+    else if (const int l = looperIndex (tool); l >= 0)
+    {
+        auto& engine = looperEngines[(size_t) l];
+        engine.setState (fresh.loopers[(size_t) l]);
+        engine.reset();
+        if (playing)
+            engine.joinClock (step, stepPhase);
+    }
 }
 
 void StudioEngine::apply (const Command& c)
@@ -88,6 +109,8 @@ void StudioEngine::apply (const Command& c)
         drumEngine.apply (c);
         for (auto& b : bassEngines)
             b.apply (c);
+        for (auto& l : looperEngines)
+            l.apply (c);
         return;
     }
     if (c.type == CommandType::AddTool)
@@ -107,6 +130,8 @@ void StudioEngine::apply (const Command& c)
         drumEngine.apply (c);
     else if (const int b = bassIndex (c.tool); b >= 0)
         bassEngines[(size_t) b].apply (c);
+    else if (const int l = looperIndex (c.tool); l >= 0)
+        looperEngines[(size_t) l].apply (c);
 }
 
 void StudioEngine::setPlaying (bool shouldPlay)
@@ -120,6 +145,20 @@ void StudioEngine::setPlaying (bool shouldPlay)
     drumEngine.setPlaying (shouldPlay);
     for (auto& b : bassEngines)
         b.setPlaying (shouldPlay);
+    for (auto& l : looperEngines)
+        l.setPlaying (shouldPlay);
+}
+
+void StudioEngine::setInput (const float* left, const float* right)
+{
+    inL = left;
+    inR = right;
+}
+
+void StudioEngine::setRecordsInput (bool b)
+{
+    for (auto& l : looperEngines)
+        l.setRecordsInput (b);
 }
 
 void StudioEngine::setSoloRender (int tool, int track)
@@ -134,6 +173,8 @@ float StudioEngine::trackPeak (int tool, int track) const
 {
     if (tool == kDrumTool)
         return drumEngine.trackPeak (track);
+    if (const int l = looperIndex (tool); l >= 0)
+        return looperEngines[(size_t) l].trackPeak (track);
     const int b = bassIndex (tool);
     return b >= 0 ? bassEngines[(size_t) b].trackPeak (track) : 0.0f;
 }
@@ -142,6 +183,8 @@ const float* StudioEngine::trackOutput (int tool, int track) const
 {
     if (tool == kDrumTool)
         return drumEngine.trackOutput (track);
+    if (const int l = looperIndex (tool); l >= 0)
+        return looperEngines[(size_t) l].trackOutput (track);
     const int b = bassIndex (tool);
     return b >= 0 ? bassEngines[(size_t) b].trackOutput (track) : nullptr;
 }
@@ -150,6 +193,8 @@ bool StudioEngine::trackTriggered (int tool, int track) const
 {
     if (tool == kDrumTool)
         return drumEngine.trackTriggered (track);
+    if (const int l = looperIndex (tool); l >= 0)
+        return looperEngines[(size_t) l].trackTriggered (track);
     const int b = bassIndex (tool);
     return b >= 0 && bassEngines[(size_t) b].trackTriggered (track);
 }
@@ -165,12 +210,16 @@ void StudioEngine::clearTriggered()
     drumEngine.clearTriggered();
     for (auto& b : bassEngines)
         b.clearTriggered();
+    for (auto& l : looperEngines)
+        l.clearTriggered();
 }
 
 float StudioEngine::busPeak (int tool) const
 {
     if (tool == kDrumTool)
         return drumEngine.masterPeak();
+    if (const int l = looperIndex (tool); l >= 0)
+        return looperEngines[(size_t) l].masterPeak();
     const int b = bassIndex (tool);
     return b >= 0 ? bassEngines[(size_t) b].masterPeak() : 0.0f;
 }
@@ -179,6 +228,8 @@ int StudioEngine::toolPattern (int tool) const
 {
     if (tool == kDrumTool)
         return drumEngine.currentPattern();
+    if (const int l = looperIndex (tool); l >= 0)
+        return looperEngines[(size_t) l].currentPattern();
     const int b = bassIndex (tool);
     return b >= 0 ? bassEngines[(size_t) b].currentPattern() : 0;
 }
@@ -187,6 +238,8 @@ int StudioEngine::toolQueuedPattern (int tool) const
 {
     if (tool == kDrumTool)
         return drumEngine.queuedPattern();
+    if (const int l = looperIndex (tool); l >= 0)
+        return looperEngines[(size_t) l].queuedPattern();
     const int b = bassIndex (tool);
     return b >= 0 ? bassEngines[(size_t) b].queuedPattern() : -1;
 }
@@ -197,6 +250,8 @@ void StudioEngine::processTool (int tool, float* left, float* right, int n)
         drumEngine.process (left, right, n);
     else if (const int b = bassIndex (tool); b >= 0)
         bassEngines[(size_t) b].process (left, right, n);
+    else if (const int l = looperIndex (tool); l >= 0)
+        looperEngines[(size_t) l].process (left, right, n);
 }
 
 void StudioEngine::process (float* left, float* right, int numSamples)
@@ -214,6 +269,8 @@ void StudioEngine::process (float* left, float* right, int numSamples)
         const double autoRate = playing ? 1.0 / samplesPerStep() : 0.0;
 
         // 1. each tool, summed while it is audible
+        for (auto& l : looperEngines)
+            l.setInput (inL != nullptr ? inL + offset : nullptr, inR != nullptr ? inR + offset : nullptr);
         for (int t = 0; t < kNumToolSlots; ++t)
         {
             toolPeaks[(size_t) t] = 0.0f;
@@ -262,5 +319,6 @@ void StudioEngine::process (float* left, float* right, int numSamples)
         }
         masterPeakValue = mp;
     }
+    inL = inR = nullptr;
 }
 } // namespace ms

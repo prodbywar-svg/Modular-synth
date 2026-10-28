@@ -109,6 +109,17 @@ enum class CommandType : std::uint8_t
     // Effect automation (see Automation.h), on any rack of any tool.
     SetFxAuto,   // track = rack (-1 = the tool's bus), index = fxAutoIndex, value (< 0 removes)
     ClearFxAuto, // track = rack or kAllRacks, index = pattern (-1 all), value = control (-1 all)
+    // The looper (see LooperState.h). Its rack is track -1, like a bus.
+    SetLoopInput,     // index = LoopInput
+    SetLoopMonitor,   // value 0/1
+    SetInputGain,     // value
+    SetLoopBars,      // index = slot, value = bars for its next recording
+    SetSlice,         // index = slot * kNumSteps + step, value = slice (kMuteSlice = silent)
+    SetLoopAudio,     // index = slot, loop = the audio (null empties it)
+    RecordLoop,       // index = slot, value 1 = overdub, loop = where it records:
+                      // from the next bar, for loop->bars bars, then the slot plays it;
+                      // track = the input latency in samples, filled in by the processor
+    CancelLoopRecord, // stops waiting or recording; the slot keeps what it had
 };
 
 constexpr int kAllRacks = -2;
@@ -118,6 +129,8 @@ constexpr int kAllRacks = -2;
 constexpr int kStudio = -1; // the studio master rack and level
 constexpr int kDrumTool = 0;
 
+struct LoopAudio;
+
 struct Command
 {
     CommandType type = CommandType::Trigger;
@@ -126,6 +139,7 @@ struct Command
     float value = 0.0f;
     const SampleData* sample = nullptr;
     int tool = kDrumTool;
+    LoopAudio* loop = nullptr; // SetLoopAudio, RecordLoop
 };
 
 struct TimedCommand

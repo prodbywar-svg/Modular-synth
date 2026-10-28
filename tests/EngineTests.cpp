@@ -924,6 +924,222 @@ void testAutomationSaved()
     CHECK (near (q.bass[0].masterFxAuto.point (0, fxGrainMix, 9), 0.125f));
     CHECK (q.drums.tracks[2].fxAuto.point (1, fxDelayMix, 4) < 0.0f);
 }
+// ---- looper -------------------------------------------------------------------
+
+// A studio with just looper 1, at 120 BPM: a step is 6000 samples, a bar 96000.
+StudioState looperOnlyStudio()
+{
+    auto s = makeDefaultStudio();
+    s.bpm = 120.0f;
+    for (int t = 0; t < kNumToolSlots; ++t)
+        s.tools[(size_t) t].active = t == kFirstLooperTool;
+    for (auto& l : s.loopers)
+        l.bpm = s.bpm;
+    return s;
+}
+
+constexpr std::int64_t kBar = 96000;
+
+Command loopCommand (CommandType type, int index, float value = 0.0f, LoopAudio* loop = nullptr, int track = 0)
+{
+    Command c;
+    c.type = type;
+    c.tool = kFirstLooperTool;
+    c.index = index;
+    c.value = value;
+    c.loop = loop;
+    c.track = track;
+    return c;
+}
+
+std::unique_ptr<LoopAudio> emptyLoop (int bars)
+{
+    auto a = std::make_unique<LoopAudio>();
+    a->bars = bars;
+    a->bpm = 120.0f;
+    a->sampleRate = kSr;
+    a->left.assign ((size_t) (kBar * bars + kBar / 4), 0.0f);
+    a->right = a->left;
+    return a;
+}
+
+// Plays the studio live from the start, the input as given, applying
+// commands at their sample (on block boundaries, like the processor).
+Rendered playLive (StudioEngine& e, const std::vector<float>& input, std::int64_t length,
+                   std::vector<TimedCommand> commands = {}, bool startPlaying = true)
+{
+    Rendered out;
+    out.l.resize ((size_t) length);
+    out.r.resize ((size_t) length);
+    std::vector<float> in (256);
+    size_t next = 0;
+    if (startPlaying)
+        e.setPlaying (true);
+    for (std::int64_t pos = 0; pos < length;)
+    {
+        while (next < commands.size() && commands[next].time <= pos)
+            e.apply (commands[next++].command);
+        int n = (int) std::min<std::int64_t> (256, length - pos);
+        if (next < commands.size())
+            n = (int) std::min<std::int64_t> (n, commands[next].time - pos);
+        for (int i = 0; i < n; ++i)
+            in[(size_t) i] = pos + i < (std::int64_t) input.size() ? input[(size_t) (pos + i)] : 0.0f;
+        e.setInput (in.data(), in.data());
+        e.process (out.l.data() + pos, out.r.data() + pos, n);
+        pos += n;
+    }
+    return out;
+}
+
+std::unique_ptr<StudioEngine> liveLooper (const StudioState& s)
+{
+    auto e = std::make_unique<StudioEngine>();
+    e->prepare (kSr, 256);
+    e->setState (s);
+    e->reset();
+    e->setRecordsInput (true);
+    return e;
+}
+
+void testLooperRecordsAndPlays()
+{
+    std::printf ("looper: records a bar from the input and plays it on the clock\n");
+    const auto s = looperOnlyStudio();
+    auto e = liveLooper (s);
+    auto audio = emptyLoop (1);
+    std::vector<float> input ((size_t) kBar, 0.0f);
+    input[24100] = 0.5f; // just after beat 2 of the first bar
+    const auto out = playLive (*e, input, kBar * 3, { { 0, loopCommand (CommandType::RecordLoop, 0, 0.0f, audio.get()) } });
+
+    CHECK (audio->length == kBar);
+    CHECK (std::abs (audio->left[24100] - 0.5f) < 1.0e-4f);
+    CHECK (e->looper (0).state().slots[0].audio == audio.get());
+    CHECK (e->looper (0).finishedCount() == 1);
+    // nothing while it records (no monitoring), then the loop every bar
+    float firstBar = 0.0f;
+    for (std::int64_t i = 0; i < kBar; ++i)
+        firstBar = std::max (firstBar, std::abs (out.l[(size_t) i]));
+    CHECK (firstBar <= 0.0f);
+    std::printf ("  bar 2 %.4f bar 3 %.4f\n", (double) out.l[(size_t) (kBar + 24100)], (double) out.l[(size_t) (2 * kBar + 24100)]);
+    CHECK (std::abs (out.l[(size_t) (kBar + 24100)] - 0.5f) < 1.0e-4f);
+    CHECK (std::abs (out.r[(size_t) (2 * kBar + 24100)] - 0.5f) < 1.0e-4f);
+    CHECK (out.onset (kBar) == kBar + 24100);
+
+    // slices: step 5 muted, step 9 plays slice 5 again
+    e->apply (loopCommand (CommandType::SetSlice, 4, (float) kMuteSlice));
+    e->apply (loopCommand (CommandType::SetSlice, 8, 4.0f));
+    const auto sliced = playLive (*e, {}, kBar, {}, false);
+    const auto at = sliced.onset (0, 0.01f);
+    std::printf ("  sliced: first hit at %lld (bar position %lld)\n", (long long) at, (long long) ((at + 0) % kBar));
+    CHECK (at >= 0 && (at + 3 * kBar) % kBar == 48100);
+}
+
+void testLooperLatencyAndOverdub()
+{
+    std::printf ("looper: the input latency is taken off; an overdub adds a layer\n");
+    const auto s = looperOnlyStudio();
+    auto e = liveLooper (s);
+    auto audio = emptyLoop (1);
+    std::vector<float> input ((size_t) (kBar * 3), 0.0f);
+    input[24100 + 480] = 0.5f; // arrives 10 ms late
+    // the overdub goes on in bar 3, on beat 4
+    input[(size_t) (2 * kBar + 72100 + 480)] = 0.25f;
+    auto layer = std::make_unique<LoopAudio>();
+    std::vector<TimedCommand> commands = { { 0, loopCommand (CommandType::RecordLoop, 0, 0.0f, audio.get(), 480) } };
+    const auto first = playLive (*e, input, kBar + 1000, commands);
+    CHECK (audio->length == kBar);
+    CHECK (std::abs (audio->left[24100] - 0.5f) < 1.0e-4f);
+
+    *layer = *audio; // what the UI does: a copy to record on top of
+    e->apply (loopCommand (CommandType::RecordLoop, 0, 1.0f, layer.get(), 480));
+    std::vector<float> rest (input.begin() + kBar + 1000, input.end());
+    playLive (*e, rest, kBar * 2 + 2000, {}, false);
+    CHECK (e->looper (0).state().slots[0].audio == layer.get());
+    CHECK (std::abs (layer->left[24100] - 0.5f) < 1.0e-4f);
+    std::printf ("  overdub layer at beat 4: %.5f\n", (double) layer->left[72100]);
+    CHECK (std::abs (layer->left[72100] - 0.25f) < 1.0e-4f);
+    CHECK (juce::exactlyEqual (audio->left[72100], 0.0f)); // the first layer stays as it was, for undo
+}
+
+void testLooperTakeReplays()
+{
+    std::printf ("looper: a recorded take, input and all, exports the same as it played\n");
+    auto s = looperOnlyStudio();
+    s.loopers[0].monitor = true; // the export hears the input too
+    s.loopers[0].masterFx[fxDelayMix] = 0.3f;
+    auto e = liveLooper (s);
+    auto audio = emptyLoop (2);
+    std::vector<float> input ((size_t) (kBar * 4), 0.0f);
+    for (int i = 0; i < 6; ++i)
+        input[(size_t) (10000 + i * 31000)] = 0.4f;
+
+    Take take;
+    take.start = e->state();
+    take.sampleRate = kSr;
+    take.length = kBar * 4;
+    take.events = { { 0, loopCommand (CommandType::RecordLoop, 0, 0.0f, audio.get()) } };
+    InputRecording rec;
+    rec.append (input.data(), input.data(), (int) input.size(), [] { return InputRecording::makeChunk(); });
+    take.input = &rec;
+    CHECK (rec.length == kBar * 4);
+
+    const auto live = playLive (*e, input, take.length, take.events);
+    const auto again = render (take, -1, take.length);
+    float diff = 0.0f;
+    for (size_t i = 0; i < live.l.size(); ++i)
+        diff = std::max ({ diff, std::abs (live.l[i] - again.l[i]), std::abs (live.r[i] - again.r[i]) });
+    std::printf ("  live peak %.3f, largest difference %g\n", (double) live.peak(), (double) diff);
+    CHECK (live.peak() > 0.3f);
+    CHECK (diff < 1.0e-6f);
+
+    // and the export writes the looper as its own stem
+    auto folder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms-looper-export-test");
+    folder.deleteRecursively();
+    ExportOptions opt;
+    opt.folder = folder;
+    opt.baseName = "t";
+    CHECK (exportTake (take, opt).ok);
+    CHECK (folder.getChildFile ("t_LOOP-1.wav").existsAsFile());
+    folder.deleteRecursively();
+}
+
+void testLooperSaveAndOpen()
+{
+    std::printf ("looper settings save and open\n");
+    auto s = looperOnlyStudio();
+    LoopAudio audio;
+    audio.length = 100;
+    audio.bars = 4;
+    audio.bpm = 97.0f;
+    auto& l = s.loopers[0];
+    l.input = LoopInput::In2;
+    l.monitor = true;
+    l.inputGain = 0.4f;
+    l.pan = 0.2f;
+    l.pattern = 2;
+    l.slots[1].bars = 8;
+    l.slots[1].slices[3] = kMuteSlice;
+    l.slots[1].slices[5] = 0;
+    l.slots[2].audio = &audio;
+    l.masterFx[fxChorusMix] = 0.5f;
+    std::array<LoopFiles, kMaxLoopers> files;
+    files[0][2].file = "x loops/LOOP-1-P3.wav";
+
+    StudioState q;
+    std::array<juce::String, kNumTracks> paths;
+    std::array<LoopFiles, kMaxLoopers> opened;
+    CHECK (studioFromVar (juce::JSON::parse (juce::JSON::toString (studioToVar (s, files))), q, paths, &opened));
+    const auto& m = q.loopers[0];
+    CHECK (q.tools[kFirstLooperTool].active);
+    CHECK (m.input == LoopInput::In2 && m.monitor && m.pattern == 2);
+    CHECK (std::abs (m.inputGain - 0.4f) < 1.0e-6f && std::abs (m.pan - 0.2f) < 1.0e-6f);
+    CHECK (m.slots[1].bars == 8 && m.slots[1].slices[3] == kMuteSlice && m.slots[1].slices[5] == 0 && m.slots[1].slices[6] == 6);
+    CHECK (m.slots[2].audio == nullptr); // the caller loads it
+    CHECK (opened[0][2].file == "x loops/LOOP-1-P3.wav" && opened[0][2].bars == 4 && std::abs (opened[0][2].bpm - 97.0f) < 1.0e-3f);
+    CHECK (opened[0][1].file.isEmpty());
+    CHECK (std::abs (m.masterFx[fxChorusMix] - 0.5f) < 1.0e-6f);
+}
+
 } // namespace
 
 // EngineTests --demo <folder>: renders the starter patterns (master + stems)
@@ -1006,6 +1222,10 @@ int main (int argc, char** argv)
     testAutomationCurve();
     testAutomationPlays();
     testAutomationSaved();
+    testLooperRecordsAndPlays();
+    testLooperLatencyAndOverdub();
+    testLooperTakeReplays();
+    testLooperSaveAndOpen();
 
     if (failures == 0)
         std::printf ("\nall engine tests passed\n");

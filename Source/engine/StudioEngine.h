@@ -2,6 +2,7 @@
 
 #include "BassEngine.h"
 #include "EngineCore.h"
+#include "LooperEngine.h"
 #include "StudioState.h"
 
 namespace ms
@@ -29,6 +30,11 @@ public:
     // only that track of the tool. One stem each.
     void setSoloRender (int tool, int track = -1);
 
+    // The audio input for the next process() call, for the loopers (null = silence).
+    void setInput (const float* left, const float* right);
+    // Live, loopers record their input; playing a take back they don't.
+    void setRecordsInput (bool b);
+
     // Overwrites left/right with numSamples of output.
     void process (float* left, float* right, int numSamples);
 
@@ -36,6 +42,8 @@ public:
     EngineCore& drums() { return drumEngine; }
     const EngineCore& drums() const { return drumEngine; }
     BassEngine& bass (int index) { return bassEngines[(size_t) index]; }
+    LooperEngine& looper (int index) { return looperEngines[(size_t) index]; }
+    const LooperEngine& looper (int index) const { return looperEngines[(size_t) index]; }
     // A track (drum or bass row) of a tool: peak, output, hit since clearTriggered().
     float trackPeak (int tool, int track) const;
     const float* trackOutput (int tool, int track) const;
@@ -66,6 +74,9 @@ private:
 
     EngineCore drumEngine;
     std::array<BassEngine, kMaxBassSynths> bassEngines;
+    std::array<LooperEngine, kMaxLoopers> looperEngines;
+    const float* inL = nullptr;
+    const float* inR = nullptr;
     FxChain masterFx;
     std::vector<float> toolL, toolR;
 

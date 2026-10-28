@@ -16,6 +16,12 @@ struct Take
     std::vector<TimedCommand> events;
     std::int64_t length = 0; // samples, not counting the effects tail
     double sampleRate = 48000.0;
+    // The audio input while it was recorded, for the loopers to hear again
+    // (null when no looper was in the studio).
+    const InputRecording* input = nullptr;
+    // Keeps the input and every loop the take plays alive while it is
+    // around (e.g. while it exports); filled in on the UI side.
+    std::vector<std::shared_ptr<const void>> held;
 };
 
 // A take that simply plays one pattern a number of times (-1 = the pattern on

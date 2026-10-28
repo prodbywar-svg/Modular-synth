@@ -40,6 +40,11 @@ public:
             limit = std::min (limit, take.length - position);
 
         const int n = (int) std::max<std::int64_t> (1, limit);
+        if (take.input != nullptr)
+        {
+            take.input->read (position, inL.data(), inR.data(), n);
+            engine.setInput (inL.data(), inR.data());
+        }
         engine.process (left, right, n);
         position += n;
         return n;
@@ -48,6 +53,7 @@ public:
 private:
     const Take& take;
     StudioEngine engine;
+    std::vector<float> inL = std::vector<float> (kBlock), inR = std::vector<float> (kBlock);
     size_t nextEvent = 0;
     std::int64_t position = 0;
 };
@@ -86,6 +92,11 @@ Take makePatternTake (const StudioState& state, int loops, double sampleRate, in
     {
         b.pattern = viewedPattern (b);
         b.queuedPattern = -1;
+    }
+    for (auto& l : t.start.loopers)
+    {
+        l.pattern = viewedPattern (l);
+        l.queuedPattern = -1;
     }
     t.sampleRate = sampleRate;
     const double stepLen = sampleRate * 60.0 / (double) state.bpm / 4.0;
@@ -137,7 +148,7 @@ ExportResult exportTake (const Take& take, const ExportOptions& opt,
         if (! take.start.tools[(size_t) tool].active)
             continue;
         const juce::String toolPart = toolName (tool);
-        stems.push_back ({ { tool, -1 }, toolPart });
+        stems.push_back ({ { tool, -1 }, toolPart }); // a looper's only stem
         if (toolKind (tool) == ToolKind::Drums)
         {
             for (int t = 0; t < kNumTracks; ++t)
