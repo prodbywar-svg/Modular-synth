@@ -40,6 +40,9 @@ public:
     float trackPeak (int tool, int track) const;
     const float* trackOutput (int tool, int track) const;
     bool trackTriggered (int tool, int track) const;
+    // A bass row's sounding (or last) MIDI note; 0 for drums.
+    float trackNote (int tool, int track) const;
+    bool toolActive (int tool) const { return validTool (tool) && studio.tools[(size_t) tool].active; }
     void clearTriggered();
     // The tool's own bus, before the studio master.
     float busPeak (int tool) const;

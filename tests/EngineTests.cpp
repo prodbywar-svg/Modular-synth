@@ -755,6 +755,38 @@ void testChorus()
     }
 }
 
+void testBassLiveNotes()
+{
+    std::printf ("bass: a live note holds until it is let go\n");
+    StudioEngine engine;
+    engine.prepare (kSr, 512);
+    engine.setState (bassOnlyStudio());
+    Command on;
+    on.type = CommandType::Trigger;
+    on.tool = kFirstBassTool;
+    on.track = 0;
+    on.index = 40; // E2: not in C minor, plays Eb2
+    on.value = 1.0f;
+    engine.apply (on);
+    std::vector<float> l ((size_t) kSr), r ((size_t) kSr);
+    engine.process (l.data(), r.data(), (int) kSr);
+    float held = 0.0f;
+    for (size_t i = l.size() / 2; i < l.size(); ++i)
+        held = std::max (held, std::abs (l[i]));
+    CHECK (held > 0.02f);
+    CHECK (std::abs (engine.trackNote (kFirstBassTool, 0) - 39.0f) < 0.01f);
+
+    Command off = on;
+    off.type = CommandType::NoteOff;
+    engine.apply (off);
+    engine.process (l.data(), r.data(), (int) kSr);
+    float after = 0.0f;
+    for (size_t i = l.size() / 2; i < l.size(); ++i)
+        after = std::max (after, std::abs (l[i]));
+    std::printf ("  held %.3f, after release %.5f\n", (double) held, (double) after);
+    CHECK (after < 0.001f);
+}
+
 void testBassExportFiles()
 {
     std::printf ("export writes each bass row as a stem\n");
@@ -849,6 +881,7 @@ int main (int argc, char** argv)
     testScaleLock();
     testBassSaveAndOpen();
     testChorus();
+    testBassLiveNotes();
     testBassExportFiles();
 
     if (failures == 0)

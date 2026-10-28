@@ -73,6 +73,7 @@ target_sources(ModularSynth PRIVATE
     ${ENGINE_SOURCES}
     Source/app/PluginProcessor.cpp
     Source/app/PluginEditor.cpp
+    Source/app/BassSynthView.cpp
     Source/app/DrumMachineView.cpp
     Source/app/Shared.cpp
     Source/app/SignalBox.cpp

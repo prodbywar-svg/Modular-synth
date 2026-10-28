@@ -154,6 +154,12 @@ bool StudioEngine::trackTriggered (int tool, int track) const
     return b >= 0 && bassEngines[(size_t) b].trackTriggered (track);
 }
 
+float StudioEngine::trackNote (int tool, int track) const
+{
+    const int b = bassIndex (tool);
+    return b >= 0 ? bassEngines[(size_t) b].trackNote (track) : 0.0f;
+}
+
 void StudioEngine::clearTriggered()
 {
     drumEngine.clearTriggered();

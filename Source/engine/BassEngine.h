@@ -38,6 +38,8 @@ public:
     float masterPeak() const { return masterPeakValue; }
     const float* trackOutput (int r) const { return taps.data() + r * maxBlock; }
     bool trackTriggered (int r) const { return triggeredThisBlock[(size_t) r]; }
+    // The row's sounding (or last) note, gliding included.
+    float trackNote (int r) const { return voices[(size_t) r].currentNote(); }
     void clearTriggered() { triggeredThisBlock.fill (false); }
     double samplesPerStep() const;
 

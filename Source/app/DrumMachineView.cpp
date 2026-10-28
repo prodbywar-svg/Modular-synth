@@ -30,7 +30,7 @@ public:
         auto& proc = editor.processor();
         for (int t = 0; t < kNumTracks; ++t)
         {
-            const int hits = proc.trackHitCount (t);
+            const int hits = proc.trackHitCount (kDrumTool, t);
             if (hits != lastHits[(size_t) t])
             {
                 lastHits[(size_t) t] = hits;
@@ -333,7 +333,7 @@ private:
         paintSignalBox (g, juce::Rectangle<float> (bx - 1.0f, y0 + 5.0f, bw + 2.0f, h - 10.0f), t, tr, alpha);
         float lastPeak = 0.0f;
         for (int c = 0; c < 8; ++c)
-            lastPeak = juce::jmax (lastPeak, proc.trackHistory (t, c));
+            lastPeak = juce::jmax (lastPeak, proc.trackHistory (kDrumTool, t, c));
         g.setFont (look::mono (9.0f));
         g.setColour (lastPeak > 1.0f ? look::red : look::dim);
         g.drawText (formatDb (lastPeak), juce::Rectangle<float> (bx - 66.0f, y0 + 4.0f, 60.0f, 12.0f), juce::Justification::topRight);
@@ -358,7 +358,7 @@ private:
     void paintSignalBox (juce::Graphics& g, juce::Rectangle<float> box, int t, const TrackState& tr, float alpha)
     {
         auto& proc = editor.processor();
-        proc.copyTrackScope (t, signal.scope(), SignalBox::kFftSize);
+        proc.copyTrackScope (kDrumTool, t, signal.scope(), SignalBox::kFftSize);
         const float f0 = fundamentalHz (tr);
         juce::String pitchText;
         for (int i = 0; i < kNumVoiceParams && f0 > 0.0f; ++i)
@@ -410,7 +410,7 @@ private:
         g.drawFittedText (data, juce::Rectangle<float> (geo.stepsX, y0 + 6.0f, geo.stepX (kNumSteps) - geo.stepsX, h - 12.0f).toNearestInt(),
                           juce::Justification::centredLeft, 3, 1.0f);
 
-        paintPeakMeter (g, geo.barcodeX, mid, geo.barcodeW, proc.drumBusPeak(), masterHold);
+        paintPeakMeter (g, geo.barcodeX, mid, geo.barcodeW, proc.busPeak (kDrumTool), masterHold);
     }
 
     enum class DragMode
