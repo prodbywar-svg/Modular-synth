@@ -10,6 +10,10 @@ constexpr int kHeaderHeight = 72;
 constexpr int kPanelHeight = 250;
 constexpr int kStatusHeight = 24;
 constexpr int kMargin = 16;
+// below these the window folds down (see resized)
+constexpr int kCompactWidth = 1000;
+constexpr int kCompactHeight = 420;
+constexpr int kPanelMinHeight = 640;
 
 // The computer keyboard as a piano, chromatic from C: Z S X D C V G B H N J M
 // is one octave, , L . ; / carry on into the next.
@@ -60,6 +64,9 @@ class BassGrid : public juce::Component
 public:
     explicit BassGrid (BassSynthView& v) : view (v) {}
 
+    // Small windows: just each row's number box and signal box.
+    void setCompact (bool c) { compact = c; }
+
     void tick()
     {
         auto& proc = view.processor();
@@ -81,6 +88,11 @@ public:
 
     void paint (juce::Graphics& g) override
     {
+        if (compact)
+        {
+            paintCompact (g);
+            return;
+        }
         auto& proc = view.processor();
         const auto& state = view.state();
         const auto geo = geometry();
@@ -127,10 +139,22 @@ public:
 
     void mouseDown (const juce::MouseEvent& e) override
     {
+        dragMode = DragMode::None;
+        if (compact)
+        {
+            // the number boxes still play the rows
+            const int r = juce::jlimit (0, kBassRows - 1, (int) (e.position.y / ((float) getHeight() / (float) kBassRows)));
+            view.selectRow (r);
+            if (e.position.x < 36.0f)
+            {
+                view.auditionNote (r, view.noteForNewStep (r, 0));
+                auditioning = r;
+            }
+            return;
+        }
         const auto geo = geometry();
         const auto p = e.position;
         const int row = geo.rowAt (p.y);
-        dragMode = DragMode::None;
         if (row < 0)
             return;
         if (row == kBassRows)
@@ -292,6 +316,8 @@ public:
 
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override
     {
+        if (compact)
+            return;
         // the wheel over a note moves it through the scale
         const auto geo = geometry();
         const int row = geo.rowAt (e.position.y), s = geo.stepAt (e.position.x);
@@ -308,6 +334,8 @@ public:
 
     void mouseMove (const juce::MouseEvent& e) override
     {
+        if (compact)
+            return;
         const int jack = geometry().jackAt (e.position);
         if (jack != hoverJack)
         {
@@ -324,6 +352,8 @@ public:
 
     void mouseDoubleClick (const juce::MouseEvent& e) override
     {
+        if (compact)
+            return;
         const auto geo = geometry();
         const int row = geo.rowAt (e.position.y);
         if (row >= 0 && row < kBassRows && e.position.x >= geo.nameX && e.position.x < geo.stepsX - 4.0f)
@@ -511,6 +541,8 @@ private:
         g.setColour (look::ink.withAlpha (alpha * (selected ? 1.0f : 0.8f)));
         g.drawText (bassSoundName (br.sound), juce::Rectangle<float> (geo.nameX + 10.0f, y0 + 4.0f, geo.stepsX - geo.nameX - 14.0f, h * 0.5f - 2.0f),
                     juce::Justification::bottomLeft, true);
+        if (br.fxAuto.any (pattern))
+            paintTag (g, "AUTO", geo.stepsX - 46.0f, y0 + 6.0f, look::blue);
         g.setFont (look::mono (9.5f));
         g.setColour (look::dim);
         g.drawText (juce::String (bassParamName (br.sound, bpTone)) + " " + bassParamText (br.sound, bpTone, br.params[bpTone]),
@@ -567,6 +599,24 @@ private:
 
         paintToggle (g, geo.muteX, mid - 9.0f, geo.toggleW, "M", br.mute, selected);
         paintToggle (g, geo.soloX, mid - 9.0f, geo.toggleW, "S", br.solo, selected);
+    }
+
+    void paintCompact (juce::Graphics& g)
+    {
+        auto& proc = view.processor();
+        const auto& state = view.state();
+        const float rowH = (float) getHeight() / (float) kBassRows, w = (float) getWidth();
+        for (int r = 0; r < kBassRows; ++r)
+        {
+            const float y0 = rowH * (float) r;
+            g.setColour (look::faint);
+            g.fillRect (0.0f, y0, w, 1.0f);
+            paintIndex (g, { 2.0f, y0 + 3.0f, 30.0f, rowH - 6.0f }, look::pad (r + 1, 2), flash[(size_t) r], view.selectedRow() == r);
+            proc.copyTrackScope (view.toolSlot(), r, signal.scope(), SignalBox::kFftSize);
+            const int note = juce::roundToInt (proc.trackNote (view.toolSlot(), r));
+            signal.paint (g, { 38.0f, y0 + 2.0f, w - 38.0f, rowH - 4.0f }, proc.getEngineSampleRate(), noteHz ((float) note),
+                          noteText (note), state.rows[(size_t) r].mute ? 0.35f : 1.0f);
+        }
     }
 
     // Patch cables: thin white lines that bow out to the right of the jacks,
@@ -660,6 +710,7 @@ private:
     SignalBox signal;
     float busHold = 0.0f;
     DragMode dragMode = DragMode::None;
+    bool compact = false;
     int dragRow = 0, dragStep = 0, startNote = 36, startLength = 1, shownNote = 36;
     float startVelocity = 1.0f;
     int auditioning = -1, hoverJack = -1;
@@ -713,6 +764,26 @@ public:
 
         fx.attach (*this, [this] { return shownFx(); },
                    [this] (int i, float value) { view.send (CommandType::SetFxParam, view.selectedRow(), i, value); });
+
+        auto& proc = view.processor();
+        const int tool = view.toolSlot();
+        FxRackControls::Automation a;
+        a.moves = [this] { return &shownFxAuto(); };
+        a.pattern = [this, &proc, tool] { return proc.isPlaying() ? proc.currentPattern (tool) : viewedPattern (view.state()); };
+        a.recording = [&proc] { return proc.isAutoArmed() && proc.isPlaying(); };
+        a.step = [&proc] { return proc.currentStep(); };
+        a.position = [&proc] { return proc.isPlaying() ? proc.stepPosition() : -1.0; };
+        a.send = [this] (CommandType type, int index, float value) { view.send (type, view.selectedRow(), index, value); };
+        fx.setAutomation (std::move (a));
+
+        addAndMakeVisible (clearAutoButton);
+        clearAutoButton.onClick = [this] {
+            const int pattern = viewedPattern (view.state());
+            view.send (CommandType::ClearFxAuto, view.selectedRow(), pattern, -1.0f);
+            view.setStatus ("CLEARED THE EFFECT AUTOMATION OF "
+                            + (view.selectedRow() < 0 ? juce::String ("THE BASS BUS") : juce::String (bassSoundName (view.state().rows[(size_t) view.selectedRow()].sound)))
+                            + " ON P" + juce::String (pattern + 1));
+        };
     }
 
     void refresh()
@@ -749,6 +820,8 @@ public:
             repaint();
         }
 
+        fx.tickAutomation (shownFx());
+        clearAutoButton.setVisible (shownFxAuto().any (viewedPattern (state)));
         if (bus)
         {
             level.setValue (state.masterLevel);
@@ -807,6 +880,8 @@ public:
         pasteButton.setBounds (top.removeFromLeft (64));
         top.removeFromLeft (4);
         randomButton.setBounds (top.removeFromLeft (76));
+        top.removeFromLeft (20);
+        clearAutoButton.setBounds (top.removeFromLeft (100));
 
         // column 0: TONE + filter + drive; column 1: glide, ADSR, level, pan
         for (int i = 0; i <= bpDrive; ++i)
@@ -872,6 +947,13 @@ private:
                         juce::Justification::centred);
     }
 
+    const FxAutomation& shownFxAuto() const
+    {
+        const auto& state = view.state();
+        const int r = view.selectedRow();
+        return r < 0 ? state.masterFxAuto : state.rows[(size_t) r].fxAuto;
+    }
+
     FxParams shownFx() const
     {
         const auto& state = view.state();
@@ -881,6 +963,7 @@ private:
 
     BassSynthView& view;
     DataButton typeButton { "SOUND" };
+    DataButton clearAutoButton { "CLEAR AUTO" };
     DataButton copyButton { "COPY ROW" }, copyPatternButton { "COPY PATTERN" }, pasteButton { "PASTE" }, randomButton { "RANDOM" };
     std::array<DataSlider, kNumBassParams> params;
     DataSlider level, pan;
@@ -904,6 +987,13 @@ BassSynthView::BassSynthView (ModularSynthProcessor& p, int t) : proc (p), tool 
     resetButton.onClick = [this] { resetToDefaults(); };
     keyButton.onClick = [this] { showKeyMenu(); };
     scaleButton.onClick = [this] { showScaleMenu(); };
+    addAndMakeVisible (autoButton);
+    autoButton.setAccent (look::red);
+    autoButton.onClick = [this] {
+        proc.setAutoArmed (! proc.isAutoArmed());
+        setStatus (proc.isAutoArmed() ? "AUTO ARMED // WHILE PLAYING, EFFECT MOVES ARE RECORDED INTO THE STEPS (RIGHT-CLICK A CONTROL TO CLEAR IT)"
+                                      : "AUTO OFF // RECORDED MOVES KEEP PLAYING");
+    };
     for (int i = 0; i < kNumPatterns; ++i)
     {
         auto& b = patternButtons[(size_t) i];
@@ -1094,6 +1184,10 @@ void BassSynthView::copyPatternTo (int pattern)
     undoText = "P" + juce::String (pattern + 1);
     for (int r = 0; r < kBassRows; ++r)
         writeRowSequence (r, pattern, rowSequence (r, from));
+    auto sendFn = [this] (CommandType type, int rack, int index, float value) { send (type, rack, index, value); };
+    for (int r = 0; r < kBassRows; ++r)
+        copyFxAutomation (sendFn, r, state().rows[(size_t) r].fxAuto, from, pattern);
+    copyFxAutomation (sendFn, -1, state().masterFxAuto, from, pattern);
     setStatus ("COPIED P" + juce::String (from + 1) + " TO P" + juce::String (pattern + 1) + " / CTRL+Z TO UNDO");
 }
 
@@ -1129,6 +1223,10 @@ void BassSynthView::applyBass (const BassState& target, bool sequences)
         set (CommandType::SetSolo, r, 0, was.solo ? 1.0f : 0.0f, want.solo ? 1.0f : 0.0f);
         for (int i = 0; i < kNumFxParams; ++i)
             set (CommandType::SetFxParam, r, i, was.fx[(size_t) i], want.fx[(size_t) i]);
+        if (sequences && was.fxAuto != want.fxAuto)
+            for (int p = 0; p < kNumPatterns; ++p)
+                copyFxAutomation ([this] (CommandType type, int rack, int index, float value) { send (type, rack, index, value); },
+                                  r, want.fxAuto, p, p);
         if (sequences)
         {
             if (was.cable != want.cable)
@@ -1140,6 +1238,10 @@ void BassSynthView::applyBass (const BassState& target, bool sequences)
     for (int i = 0; i < kNumFxParams; ++i)
         set (CommandType::SetFxParam, -1, i, state().masterFx[(size_t) i], target.masterFx[(size_t) i]);
     set (CommandType::SetMasterLevel, 0, 0, state().masterLevel, target.masterLevel);
+    if (sequences && state().masterFxAuto != target.masterFxAuto)
+        for (int p = 0; p < kNumPatterns; ++p)
+            copyFxAutomation ([this] (CommandType type, int rack, int index, float value) { send (type, rack, index, value); },
+                              -1, target.masterFxAuto, p, p);
 
     if (rescale)
     {
@@ -1159,8 +1261,10 @@ void BassSynthView::clearPattern()
     {
         row.velocity[(size_t) pattern].fill (0.0f);
         row.fx = defaults;
+        row.fxAuto.clear (pattern);
     }
     target.masterFx = defaults;
+    target.masterFxAuto.clear (pattern);
 
     remember();
     undoText = "P" + juce::String (pattern + 1) + " AND THE EFFECTS";
@@ -1415,6 +1519,7 @@ void BassSynthView::tick()
                          + "  " + look::pad (proc.currentStep() + 1, 2) + "/" + juce::String (kNumSteps));
     octaveReadout.setText ("C" + juce::String (octave) + " - E" + juce::String (octave + 1));
     busReadout.setText (formatDb (levelToGain (b.masterLevel)));
+    autoButton.setOn (proc.isAutoArmed());
 
     grid->tick();
     panel->refresh();
@@ -1424,6 +1529,8 @@ void BassSynthView::tick()
 void BassSynthView::paint (juce::Graphics& g)
 {
     g.fillAll (look::background);
+    if (isCompact())
+        return;
 
     g.setColour (look::ink);
     g.setFont (look::mono (16.0f, true));
@@ -1448,8 +1555,35 @@ void BassSynthView::paint (juce::Graphics& g)
                 statusArea, juce::Justification::centredRight, true);
 }
 
+bool BassSynthView::isCompact() const
+{
+    return getWidth() < kCompactWidth || getHeight() < kCompactHeight;
+}
+
 void BassSynthView::resized()
 {
+    // Smaller windows fold away the controls panel, then everything but the
+    // pattern buttons and the signal boxes.
+    const bool compact = isCompact();
+    grid->setCompact (compact);
+    panel->setVisible (! compact && getHeight() >= kPanelMinHeight);
+    for (juce::Component* c : { (juce::Component*) &clearButton, (juce::Component*) &resetButton, (juce::Component*) &autoButton,
+                                (juce::Component*) &keyButton, (juce::Component*) &scaleButton, (juce::Component*) &stepReadout,
+                                (juce::Component*) &octaveReadout, (juce::Component*) &busReadout })
+        c->setVisible (! compact);
+    if (compact)
+    {
+        auto area = getLocalBounds();
+        auto buttons = area.removeFromTop (34).reduced (8, 6);
+        for (auto& b : patternButtons)
+        {
+            b.setBounds (buttons.removeFromLeft (44));
+            buttons.removeFromLeft (4);
+        }
+        grid->setBounds (area.reduced (6, 2));
+        return;
+    }
+
     auto area = getLocalBounds();
     auto header = area.removeFromTop (kHeaderHeight).reduced (kMargin, 0);
 
@@ -1467,6 +1601,8 @@ void BassSynthView::resized()
     keyButton.setBounds (buttons.removeFromLeft (72));
     buttons.removeFromLeft (6);
     scaleButton.setBounds (buttons.removeFromLeft (120));
+    buttons.removeFromLeft (18);
+    autoButton.setBounds (buttons.removeFromLeft (72));
 
     auto readouts = header.withTrimmedTop (8).withTrimmedLeft (juce::jmax (620, header.getWidth() - 390));
     stepReadout.setBounds (readouts.removeFromLeft (120).withHeight (36));
@@ -1476,6 +1612,7 @@ void BassSynthView::resized()
     busReadout.setBounds (readouts.removeFromLeft (110).withHeight (36));
 
     area.removeFromBottom (kStatusHeight);
-    panel->setBounds (area.removeFromBottom (kPanelHeight).reduced (kMargin, 0));
+    if (panel->isVisible())
+        panel->setBounds (area.removeFromBottom (kPanelHeight).reduced (kMargin, 0));
     grid->setBounds (area.reduced (kMargin, 6));
 }

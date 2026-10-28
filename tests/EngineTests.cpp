@@ -804,6 +804,126 @@ void testBassExportFiles()
     CHECK (! folder.getChildFile ("t_BASS-1-02-PULSE.wav").existsAsFile()); // nothing on P1
     folder.deleteRecursively();
 }
+
+void testAutomationCurve()
+{
+    std::printf ("automation: controls glide between recorded steps, round the bar\n");
+    FxAutomation a;
+    CHECK (! a.any (0));
+    a.set (0, fxCutoff, 0, 0.0f);
+    CHECK (std::abs (a.valueAt (0, fxCutoff, 9.5) - 0.0f) < 1.0e-4f); // one point holds
+    a.set (0, fxCutoff, 8, 1.0f);
+    CHECK (std::abs (a.valueAt (0, fxCutoff, 4.0) - 0.5f) < 1.0e-3f);
+    CHECK (std::abs (a.valueAt (0, fxCutoff, 12.0) - 0.5f) < 1.0e-3f); // back down towards step 1
+    CHECK (std::abs (a.valueAt (0, fxCutoff, 8.0) - 1.0f) < 1.0e-3f);
+    CHECK (a.has (0, fxCutoff) && ! a.has (1, fxCutoff) && ! a.has (0, fxDelayMix));
+
+    FxParams base = defaultFxParams();
+    const auto applied = a.apply (base, 0, 4.0);
+    CHECK (std::abs (applied[fxCutoff] - 0.5f) < 1.0e-3f);
+    CHECK (juce::exactlyEqual (applied[fxDelayMix], base[fxDelayMix]));
+
+    Command clear;
+    clear.type = CommandType::ClearFxAuto;
+    clear.index = 0;
+    clear.value = -1.0f;
+    applyFxAuto (a, clear);
+    CHECK (! a.anyAtAll());
+}
+
+// Energy of the sample-to-sample differences (the highs) in [from, to).
+double highs (const std::vector<float>& x, size_t from, size_t to)
+{
+    double e = 0.0;
+    for (size_t i = from + 1; i < to; ++i)
+        e += (double) (x[i] - x[i - 1]) * (double) (x[i] - x[i - 1]);
+    return e;
+}
+
+void testAutomationPlays()
+{
+    std::printf ("automation: a recorded filter sweep on the drum bus plays back, the same every time\n");
+    auto studio = studioWithDrums (makeDefaultProject());
+    // open for the first half of the bar, nearly shut for the second
+    auto record = [&studio] (int step, float value) {
+        Command c;
+        c.type = CommandType::SetFxAuto;
+        c.tool = kDrumTool;
+        c.track = -1;
+        c.index = fxAutoIndex (0, fxCutoff, step);
+        c.value = value;
+        applyToStudio (studio, c);
+    };
+    const auto plain = makePatternTake (studio, 1, kSr);
+    record (0, 1.0f);
+    record (7, 1.0f);
+    record (8, 0.08f);
+    record (15, 0.08f);
+    CHECK (studio.drums.masterFxAuto.has (0, fxCutoff));
+    const auto swept = makePatternTake (studio, 1, kSr);
+
+    const auto a = renderStem (plain, {}, plain.length);
+    const auto b = renderStem (swept, {}, swept.length);
+    const auto b2 = renderStem (swept, {}, swept.length);
+    CHECK (a.l == a.l && b.l == b2.l); // deterministic
+    const double stepLen = kSr * 60.0 / (double) studio.bpm / 4.0;
+    const auto half = (size_t) (stepLen * 8.0), end = (size_t) (stepLen * 15.5);
+    const double plainRatio = highs (a.l, half + (size_t) stepLen, end) / highs (a.l, 0, half);
+    const double sweptRatio = highs (b.l, half + (size_t) stepLen, end) / highs (b.l, 0, half);
+    std::printf ("  second half / first half highs: %.3f plain, %.4f swept\n", plainRatio, sweptRatio);
+    CHECK (sweptRatio < plainRatio * 0.2);
+    CHECK (b.finite());
+
+    // every rack automated at once, several bars: nothing blows up
+    auto busy = makeDefaultStudio();
+    auto point = [&busy] (int tool, int rack, int param, int st, float v) {
+        Command c;
+        c.type = CommandType::SetFxAuto;
+        c.tool = tool;
+        c.track = rack;
+        c.index = fxAutoIndex (0, param, st);
+        c.value = v;
+        applyToStudio (busy, c);
+    };
+    for (int st = 0; st < kNumSteps; ++st)
+    {
+        point (kDrumTool, 0, fxCutoff, st, 0.35f + 0.6f * std::abs (std::sin ((float) st * 0.4f)));
+        point (kFirstBassTool, 0, fxCutoff, st, 0.35f + 0.6f * std::abs (std::sin ((float) st * 0.4f)));
+        if (st % 4 == 0)
+        {
+            point (kDrumTool, 0, fxDelayMix, st, st == 8 ? 0.6f : 0.1f);
+            point (kFirstBassTool, 0, fxDelayMix, st, st == 8 ? 0.6f : 0.1f);
+        }
+    }
+    point (kStudio, 0, fxReverbMix, 0, 0.1f);
+    point (kStudio, 0, fxReverbMix, 12, 0.5f);
+    const auto busyTake = makePatternTake (busy, 4, kSr);
+    const auto out = renderStem (busyTake, {}, busyTake.length);
+    std::printf ("  everything automated: peak %.3f\n", (double) out.peak());
+    CHECK (out.finite());
+}
+
+void testAutomationSaved()
+{
+    std::printf ("automation: saved and opened on every kind of rack\n");
+    auto s = makeDefaultStudio();
+    s.masterFxAuto.set (0, fxReverbMix, 3, 0.25f);
+    s.drums.tracks[2].fxAuto.set (1, fxDelayMix, 5, 0.5f);
+    s.drums.masterFxAuto.set (3, fxCutoff, 15, 0.75f);
+    s.bass[0].rows[4].fxAuto.set (2, fxChorusMix, 0, 1.0f);
+    s.bass[0].masterFxAuto.set (0, fxGrainMix, 9, 0.125f);
+
+    StudioState q;
+    std::array<juce::String, kNumTracks> paths;
+    CHECK (studioFromVar (juce::JSON::parse (juce::JSON::toString (studioToVar (s))), q, paths));
+    auto near = [] (float a, float b) { return std::abs (a - b) < 3.0e-3f; };
+    CHECK (near (q.masterFxAuto.point (0, fxReverbMix, 3), 0.25f));
+    CHECK (near (q.drums.tracks[2].fxAuto.point (1, fxDelayMix, 5), 0.5f));
+    CHECK (near (q.drums.masterFxAuto.point (3, fxCutoff, 15), 0.75f));
+    CHECK (near (q.bass[0].rows[4].fxAuto.point (2, fxChorusMix, 0), 1.0f));
+    CHECK (near (q.bass[0].masterFxAuto.point (0, fxGrainMix, 9), 0.125f));
+    CHECK (q.drums.tracks[2].fxAuto.point (1, fxDelayMix, 4) < 0.0f);
+}
 } // namespace
 
 // EngineTests --demo <folder>: renders the starter patterns (master + stems)
@@ -883,6 +1003,9 @@ int main (int argc, char** argv)
     testChorus();
     testBassLiveNotes();
     testBassExportFiles();
+    testAutomationCurve();
+    testAutomationPlays();
+    testAutomationSaved();
 
     if (failures == 0)
         std::printf ("\nall engine tests passed\n");

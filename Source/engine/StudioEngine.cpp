@@ -209,6 +209,10 @@ void StudioEngine::process (float* left, float* right, int numSamples)
         std::fill (outL, outL + n, 0.0f);
         std::fill (outR, outR + n, 0.0f);
 
+        // where the block starts on the studio clock, for the master automation
+        const double autoPosition = (double) step + stepPhase / samplesPerStep();
+        const double autoRate = playing ? 1.0 / samplesPerStep() : 0.0;
+
         // 1. each tool, summed while it is audible
         for (int t = 0; t < kNumToolSlots; ++t)
         {
@@ -246,8 +250,7 @@ void StudioEngine::process (float* left, float* right, int numSamples)
         }
 
         // 3. studio master effects and level
-        masterFx.setParams (studio.masterFx, studio.bpm);
-        masterFx.process (outL, outR, n);
+        masterFx.processAutomated (studio.masterFx, studio.masterFxAuto, 0, autoPosition, autoRate, studio.bpm, outL, outR, n);
 
         const float gain = levelToGain (studio.masterLevel);
         float mp = 0.0f;

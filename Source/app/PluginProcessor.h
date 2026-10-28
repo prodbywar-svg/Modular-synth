@@ -54,6 +54,12 @@ public:
     bool isPlaying() const { return playingFlag.load(); }
     bool isRecording() const { return recordingFlag.load(); }
     int currentStep() const { return stepIndex.load(); }
+    // Where the clock is in the bar, in steps (0 .. 16).
+    double stepPosition() const { return stepPositionValue.load(); }
+
+    // AUTO: while armed and playing, effect moves are recorded into the steps.
+    bool isAutoArmed() const { return autoArmed; }
+    void setAutoArmed (bool b) { autoArmed = b; }
     int currentPattern (int tool = ms::kDrumTool) const { return currentPatterns[(size_t) tool].load(); }
     int queuedPattern (int tool = ms::kDrumTool) const { return queuedPatterns[(size_t) tool].load(); }
     // Call from the message thread regularly (the editor's timer does).
@@ -139,6 +145,8 @@ private:
     static int lane (int tool, int t) { return tool * kLanesPerTool + t; }
     std::atomic<bool> playingFlag { false }, recordingFlag { false };
     std::atomic<int> stepIndex { 0 }, recordedEventCount { 0 };
+    std::atomic<double> stepPositionValue { 0.0 };
+    bool autoArmed = false; // message thread
     std::array<std::atomic<int>, ms::kNumToolSlots> currentPatterns {}, queuedPatterns {};
     std::atomic<std::int64_t> recordedSampleCount { 0 }, playedSampleCount { 0 };
     std::atomic<float> masterPeakValue { 0.0f };

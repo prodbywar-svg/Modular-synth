@@ -187,15 +187,19 @@ void SignalBox::paint (juce::Graphics& g, juce::Rectangle<float> box, double sr,
         const float tagW = juce::GlyphArrangement::getStringWidth (look::mono (8.0f, true), text) + 5.0f;
         const float tx = fx + 2.0f + tagW < area.getRight() - 50.0f ? fx + 2.0f : fx - 2.0f - tagW;
         paintTag (g, text, tx, top + 1.0f, look::red.withAlpha (alpha));
-        paintPhasePortrait (g, { tx, top + 12.0f, 22.0f, 22.0f }, f0, sr);
+        if (area.getBottom() - top >= 34.0f)
+            paintPhasePortrait (g, { tx, top + 12.0f, 22.0f, 22.0f }, f0, sr);
     }
-    if (live && centroid > 20.0f)
+    // small boxes (folded-down windows) keep only what fits
+    const bool roomy = area.getBottom() - top >= 34.0f;
+    if (live && centroid > 20.0f && roomy)
         paintTag (g, "CENT " + juce::String (juce::roundToInt (centroid)) + " Hz", juce::jmin (area.getRight() - 112.0f, xOf (centroid) + 2.0f), top + 23.0f, look::blue);
 
     const auto dbText = [] (float v) { return v < 1.0e-5f ? juce::String ("-INF") : juce::String (gainToDb (v), 1); };
     const juce::String readouts[] = { "PK " + dbText (peak), "RMS " + dbText (rms), "CRST " + (rms > 1.0e-4f ? juce::String (peak / rms, 1) : juce::String ("--")) };
     float ry = top + 1.0f;
-    for (int i = 0; i < 3; ++i)
+    const int readoutsShown = juce::jlimit (1, 3, (int) ((area.getBottom() - top) / 11.0f));
+    for (int i = 0; i < readoutsShown; ++i)
     {
         const float tw = juce::GlyphArrangement::getStringWidth (look::mono (8.0f, true), readouts[i]) + 5.0f;
         paintTag (g, readouts[i], area.getRight() - tw - 1.0f, ry, i == 0 && peak > 1.0f ? look::red : look::ink.withAlpha (alpha));

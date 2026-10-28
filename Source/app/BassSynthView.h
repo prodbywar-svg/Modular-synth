@@ -71,12 +71,13 @@ private:
     void writeRowSequence (int row, int pattern, const RowSequence&);
 
     void playKey (int semitone);
+    bool isCompact() const;
 
     ModularSynthProcessor& proc;
     const int tool;
     int selected = 0;
 
-    DataButton clearButton { "CLEAR" }, resetButton { "RESET" }, keyButton { "KEY" }, scaleButton { "SCALE" };
+    DataButton clearButton { "CLEAR" }, resetButton { "RESET" }, keyButton { "KEY" }, scaleButton { "SCALE" }, autoButton { "AUTO" };
     std::array<DataButton, ms::kNumPatterns> patternButtons { DataButton { "P1" }, DataButton { "P2" }, DataButton { "P3" }, DataButton { "P4" } };
     DataReadout stepReadout, octaveReadout, busReadout;
 

@@ -41,6 +41,11 @@ window, and **REMOVE**, which takes it out of the project (it asks first).
 adds a fresh tool, already in time with the others. Closing a tool's window only
 hides it: it keeps playing.
 
+Every window can be made much smaller: below full height the controls panel
+folds away, and narrower still a tool's window shows just **P1-P4** and each
+row's signal box (its number boxes still play). The studio window folds its
+master rack away the same way.
+
 All tools run on one clock: one tempo, one swing, patterns switch together at the
 end of the bar. Space, Esc, R, E, Ctrl+S and Ctrl+O work from any window. Saved
 projects remember which tools are in, and where their windows sit. Projects
@@ -157,6 +162,24 @@ Every drum, bass row, tool bus and the studio master have the same effects rack,
 8. **Psychosis**: up to six OTT-style three-band compressors in a row, squashing loud
    parts down and dragging quiet parts up. Release time in ms or notes.
 
+### Effect automation
+
+Press **AUTO** (studio window or any tool window) and play: every effect
+control you move is written into the step that is playing, and holding a
+control writes each step it passes. Play it back and the control glides from
+one recorded step to the next, round the bar, without you touching it.
+
+- It works on every rack: each drum, each bass row, the drum bus, the bass bus
+  and the studio master. Each pattern (P1-P4) has its own moves; the studio
+  master's loop every bar.
+- Recorded steps show as blue marks under a control, and while playing the
+  control and its number move in blue. Rows with moves on the pattern on screen
+  get a blue **AUTO** tag.
+- Right-click a control to clear its moves, or **CLEAR AUTO** for the whole rack.
+  **CLEAR** clears the pattern's moves too (`Ctrl+Z` brings them back), and
+  `Shift`+click **P1**-**P4** copies them with the pattern.
+- Moves are saved with the project and rendered into exports.
+
 ### Recording and export
 
 Press **REC** (studio window, or `R` in any window), play: hit pads, mute tracks, move any control in any tool. Press **REC** or
@@ -215,7 +238,7 @@ node web/tests/parity.mjs <native_render>  # wasm output must match the native e
   `StudioState` (the tools, studio commands, save/open),
   `EngineCore` (the drum machine: sequencer, patterns, voices, mixer, drum bus),
   `BassEngine` / `BassVoice` / `BassState` (the bass synth: notes, scales, cut
-  groups, its 8 sounds), `Voice` (every drum voice
+  groups, its 8 sounds), `Automation` (recorded effect moves), `Voice` (every drum voice
   in its three characters), `Hr16Bank` (the embedded HR-16 samples in
   `assets/hr16`), `FxChain` (effects rack) and `Effects` (grain delay, reverb,
   Psychosis, chorus), `OfflineRenderer` (take replay and WAV export),

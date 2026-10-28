@@ -49,6 +49,8 @@ public:
     int toolPattern (int tool) const;
     int toolQueuedPattern (int tool) const;
     int currentStep() const { return step; }
+    // Where the clock is in the bar, in steps (0 .. 16).
+    double position() const { return (double) step + stepPhase / samplesPerStep(); }
     float toolPeak (int tool) const { return validTool (tool) ? toolPeaks[(size_t) tool] : 0.0f; }
     float masterPeak() const { return masterPeakValue; }
     double getSampleRate() const { return sr; }

@@ -377,6 +377,19 @@ void applyToBass (BassState& b, const Command& c)
                     b.masterFx[(size_t) c.index] = clamp01 (c.value);
             }
             break;
+        case CommandType::SetFxAuto:
+        case CommandType::ClearFxAuto:
+            if (row != nullptr)
+                applyFxAuto (row->fxAuto, c);
+            else if (c.track == -1)
+                applyFxAuto (b.masterFxAuto, c);
+            else if (c.track == kAllRacks)
+            {
+                applyFxAuto (b.masterFxAuto, c);
+                for (auto& r : b.rows)
+                    applyFxAuto (r.fxAuto, c);
+            }
+            break;
         case CommandType::SetStep:
             if (row != nullptr && validStep)
                 row->velocity[(size_t) pattern][(size_t) step] = clamp01 (c.value);
@@ -449,6 +462,7 @@ juce::var bassToVar (const BassState& b)
     root->setProperty ("scale", scaleName (b.scale));
     root->setProperty ("masterLevel", b.masterLevel);
     root->setProperty ("masterFx", fxToVar (b.masterFx));
+    root->setProperty ("masterFxAuto", b.masterFxAuto.toVar());
 
     juce::Array<juce::var> rows;
     for (const auto& r : b.rows)
@@ -461,6 +475,7 @@ juce::var bassToVar (const BassState& b)
         o->setProperty ("mute", r.mute);
         o->setProperty ("solo", r.solo);
         o->setProperty ("fx", fxToVar (r.fx));
+        o->setProperty ("fxAuto", r.fxAuto.toVar());
         o->setProperty ("cable", r.cable);
         juce::Array<juce::var> patterns;
         for (int p = 0; p < kNumPatterns; ++p)
@@ -493,6 +508,7 @@ bool bassFromVar (const juce::var& v, BassState& out)
     b.scale = scaleFromName (v.getProperty ("scale", "MINOR").toString().toRawUTF8());
     b.masterLevel = clamp01 ((float) v.getProperty ("masterLevel", b.masterLevel));
     fxFromVar (v.getProperty ("masterFx", {}), b.masterFx);
+    b.masterFxAuto.fromVar (v.getProperty ("masterFxAuto", {}));
 
     if (auto* rows = v.getProperty ("rows", {}).getArray())
     {
@@ -508,6 +524,7 @@ bool bassFromVar (const juce::var& v, BassState& out)
             r.solo = (bool) o.getProperty ("solo", false);
             r.fx = defaultFxParams();
             fxFromVar (o.getProperty ("fx", {}), r.fx);
+            r.fxAuto.fromVar (o.getProperty ("fxAuto", {}));
             const int cable = (int) o.getProperty ("cable", -1);
             r.cable = cable >= 0 && cable < kBassRows && cable != i ? cable : -1;
 

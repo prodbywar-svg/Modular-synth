@@ -136,6 +136,19 @@ void applyToState (ProjectState& p, const Command& c)
                     p.masterFx[(size_t) c.index] = clamp01 (c.value);
             }
             break;
+        case CommandType::SetFxAuto:
+        case CommandType::ClearFxAuto:
+            if (track != nullptr)
+                applyFxAuto (track->fxAuto, c);
+            else if (c.track == -1)
+                applyFxAuto (p.masterFxAuto, c);
+            else if (c.track == kAllRacks)
+            {
+                applyFxAuto (p.masterFxAuto, c);
+                for (auto& t : p.tracks)
+                    applyFxAuto (t.fxAuto, c);
+            }
+            break;
         case CommandType::SetStep:
         {
             const int pattern = c.index / kNumSteps, step = c.index % kNumSteps;
@@ -233,6 +246,7 @@ juce::var projectToVar (const ProjectState& p)
     root->setProperty ("pattern", p.pattern);
     root->setProperty ("masterLevel", p.masterLevel);
     root->setProperty ("masterFx", fxToVar (p.masterFx));
+    root->setProperty ("masterFxAuto", p.masterFxAuto.toVar());
 
     juce::Array<juce::var> tracks;
     for (const auto& t : p.tracks)
@@ -246,6 +260,7 @@ juce::var projectToVar (const ProjectState& p)
         o->setProperty ("mute", t.mute);
         o->setProperty ("solo", t.solo);
         o->setProperty ("fx", fxToVar (t.fx));
+        o->setProperty ("fxAuto", t.fxAuto.toVar());
         juce::Array<juce::var> patterns;
         for (const auto& pat : t.patterns)
             patterns.add (floatArray (pat.data(), kNumSteps));
@@ -269,6 +284,7 @@ bool projectFromVar (const juce::var& v, ProjectState& p, std::array<juce::Strin
     result.pattern = juce::jlimit (0, kNumPatterns - 1, (int) v.getProperty ("pattern", 0));
     result.masterLevel = clamp01 ((float) v.getProperty ("masterLevel", result.masterLevel));
     fxFromVar (v.getProperty ("masterFx", {}), result.masterFx);
+    result.masterFxAuto.fromVar (v.getProperty ("masterFxAuto", {}));
 
     if (auto* tracks = v.getProperty ("tracks", {}).getArray())
     {
@@ -284,6 +300,7 @@ bool projectFromVar (const juce::var& v, ProjectState& p, std::array<juce::Strin
             t.mute = (bool) o.getProperty ("mute", false);
             t.solo = (bool) o.getProperty ("solo", false);
             fxFromVar (o.getProperty ("fx", {}), t.fx);
+            t.fxAuto.fromVar (o.getProperty ("fxAuto", {}));
 
             if (auto* patterns = o.getProperty ("patterns", {}).getArray())
             {

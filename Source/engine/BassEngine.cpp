@@ -155,6 +155,10 @@ void BassEngine::process (float* left, float* right, int numSamples)
         // 1. sequencer + voices, sample by sample so notes land sample-accurately
         const double stepLen = samplesPerStep();
         const double swingDelay = (double) bass.swing * 0.5 * stepLen;
+        // where the block starts, for the effect automation
+        const double autoPosition = (double) step + stepPhase / stepLen;
+        const double autoRate = playing ? 1.0 / stepLen : 0.0;
+        const int autoPattern = bass.pattern;
         for (int i = 0; i < n; ++i)
         {
             if (playing)
@@ -198,9 +202,8 @@ void BassEngine::process (float* left, float* right, int numSamples)
                 rowR[(size_t) i] = mono[i] * gr;
             }
 
-            auto& fx = rowFx[(size_t) r];
-            fx.setParams (row.fx, bass.bpm);
-            fx.process (rowL.data(), rowR.data(), n);
+            rowFx[(size_t) r].processAutomated (row.fx, row.fxAuto, autoPattern, autoPosition, autoRate, bass.bpm,
+                                                rowL.data(), rowR.data(), n);
 
             const float gain = levelToGain (row.level);
             float peak = 0.0f;
@@ -228,8 +231,7 @@ void BassEngine::process (float* left, float* right, int numSamples)
         }
 
         // 3. bass bus effects and level
-        busFx.setParams (bass.masterFx, bass.bpm);
-        busFx.process (outL, outR, n);
+        busFx.processAutomated (bass.masterFx, bass.masterFxAuto, autoPattern, autoPosition, autoRate, bass.bpm, outL, outR, n);
         const float busGain = levelToGain (bass.masterLevel);
         float mp = 0.0f;
         for (int i = 0; i < n; ++i)

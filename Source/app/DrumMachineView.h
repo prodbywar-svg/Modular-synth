@@ -50,11 +50,12 @@ private:
     void undo();                      // takes back the last clear, paste, random or reset
 
     void hitPad (int track, float velocity);
+    bool isCompact() const;
 
     ModularSynthProcessor& proc;
     int selected = 0;
 
-    DataButton clearButton { "CLEAR" }, resetButton { "RESET" };
+    DataButton clearButton { "CLEAR" }, resetButton { "RESET" }, autoButton { "AUTO" };
     std::array<DataButton, ms::kNumPatterns> patternButtons { DataButton { "P1" }, DataButton { "P2" }, DataButton { "P3" }, DataButton { "P4" } };
     DataReadout stepReadout, busReadout;
 
@@ -72,6 +73,8 @@ private:
         bool hasFx = false;
         std::array<ms::FxParams, ms::kNumTracks> fx {};
         ms::FxParams masterFx {};
+        std::array<ms::FxAutomation, ms::kNumTracks> fxAuto {};
+        ms::FxAutomation masterFxAuto {};
         bool hasSettings = false;  // a reset: every setting in `settings` comes back
         ms::ProjectState settings {};
     };
