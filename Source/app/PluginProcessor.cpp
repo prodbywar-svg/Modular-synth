@@ -156,6 +156,7 @@ void ModularSynthProcessor::replaceStudio (const StudioState& s)
         cmd (CommandType::SetLoopMonitor, tool, 0, 0, looper.monitor ? 1.0f : 0.0f);
         cmd (CommandType::SetMonitorDry, tool, 0, 0, looper.monitorDry ? 1.0f : 0.0f);
         cmd (CommandType::SetCountIn, tool, 0, 0, (float) looper.countIn);
+        cmd (CommandType::SetMetronome, tool, 0, looper.metronome, 0.0f);
         cmd (CommandType::SetInputGain, tool, 0, 0, looper.inputGain);
         cmd (CommandType::SetMasterLevel, tool, 0, 0, looper.masterLevel);
         cmd (CommandType::SetPan, tool, 0, 0, looper.pan);

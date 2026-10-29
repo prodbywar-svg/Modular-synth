@@ -659,7 +659,7 @@ LooperView::LooperView (ModularSynthProcessor& p, int t) : proc (p), tool (t)
     addAndMakeVisible (*grid);
     addAndMakeVisible (*panel);
 
-    for (auto* b : { &recButton, &overdubButton, &barsButton, &countButton, &inputButton, &monitorButton, &dryButton, &clearButton,
+    for (auto* b : { &recButton, &overdubButton, &barsButton, &countButton, &clickButton, &inputButton, &monitorButton, &dryButton, &clearButton,
                      &resetButton, &autoButton })
         addAndMakeVisible (*b);
     recButton.setAccent (look::red);
@@ -672,6 +672,7 @@ LooperView::LooperView (ModularSynthProcessor& p, int t) : proc (p), tool (t)
     monitorButton.onClick = [this] { toggleMonitor(); };
     dryButton.onClick = [this] { toggleMonitorDry(); };
     countButton.onClick = [this] { showCountInMenu(); };
+    clickButton.onClick = [this] { showClickMenu(); };
     clearButton.onClick = [this] { clearSlot(); };
     resetButton.onClick = [this] { resetToDefaults(); };
     autoButton.onClick = [this] {
@@ -786,6 +787,27 @@ void LooperView::toggleMonitorDry()
         send (CommandType::SetLoopMonitor, 0, 0, 1.0f);
     setStatus (dry ? "MONITOR DRY // YOU HEAR THE INPUT AS IT COMES IN, WITHOUT THE RACK (SHIFT+M SWITCHES)"
                    : "MONITOR FX // YOU HEAR THE INPUT THROUGH THE LOOPER'S RACK (SHIFT+M SWITCHES)");
+}
+
+void LooperView::showClickMenu()
+{
+    juce::PopupMenu m;
+    m.addSectionHeader ("METRONOME // A CLICK ON EVERY BEAT, NEVER RECORDED OR EXPORTED");
+    m.addItem (1 + kClickOff, "OFF", true, state().metronome == kClickOff);
+    m.addItem (1 + kClickPlaying, "ON WHILE PLAYING", true, state().metronome == kClickPlaying);
+    m.addItem (1 + kClickRecording, "ONLY WHILE RECORDING", true, state().metronome == kClickRecording);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&clickButton), [this] (int r) {
+        if (r > 0)
+            setClick (r - 1);
+    });
+}
+
+void LooperView::setClick (int mode)
+{
+    send (CommandType::SetMetronome, 0, mode, 0.0f);
+    setStatus (mode == kClickPlaying     ? "CLICK ON // A CLICK ON EVERY BEAT WHILE PLAYING, HIGHER ON THE 1 (K SWITCHES IT)"
+               : mode == kClickRecording ? "CLICK WHILE RECORDING // ONLY WHILE THIS LOOPER RECORDS OR OVERDUBS"
+                                         : "CLICK OFF // THE COUNT-IN STILL CLICKS");
 }
 
 void LooperView::showCountInMenu()
@@ -975,6 +997,8 @@ void LooperView::applyLooper (const Snapshot& target, bool slots)
     set (CommandType::SetLoopMonitor, 0, 0, now.monitor ? 1.0f : 0.0f, want.monitor ? 1.0f : 0.0f);
     set (CommandType::SetMonitorDry, 0, 0, now.monitorDry ? 1.0f : 0.0f, want.monitorDry ? 1.0f : 0.0f);
     set (CommandType::SetCountIn, 0, 0, (float) now.countIn, (float) want.countIn);
+    if (now.metronome != want.metronome)
+        send (CommandType::SetMetronome, 0, want.metronome, 0.0f);
     set (CommandType::SetInputGain, 0, 0, now.inputGain, want.inputGain);
     set (CommandType::SetMasterLevel, 0, 0, now.masterLevel, want.masterLevel);
     set (CommandType::SetPan, 0, 0, now.pan, want.pan);
@@ -1075,6 +1099,7 @@ bool LooperView::keyPressed (const juce::KeyPress& key)
     if (c == 'o') { recordLoop (true); return true; }
     if (c == 'm' && mods.isShiftDown()) { toggleMonitorDry(); return true; }
     if (c == 'm') { toggleMonitor(); return true; }
+    if (c == 'k') { setClick (state().metronome == kClickOff ? kClickPlaying : kClickOff); return true; }
     return unhandled();
 }
 
@@ -1108,6 +1133,8 @@ void LooperView::tick()
     monitorButton.setOn (l.monitor);
     dryButton.setText (l.monitorDry ? "DRY" : "FX");
     dryButton.setOn (l.monitor);
+    clickButton.setText (l.metronome == kClickRecording ? "CLICK REC" : "CLICK");
+    clickButton.setOn (l.metronome != kClickOff);
     countButton.setText (l.countIn == 0 ? juce::String ("NO COUNT") : "COUNT " + juce::String (l.countIn));
     autoButton.setOn (proc.isAutoArmed());
 
@@ -1157,7 +1184,7 @@ void LooperView::paint (juce::Graphics& g)
     g.setColour (proc.isRecording() ? look::red : look::ink);
     g.drawText (fresh ? status : juce::String ("READY"), statusArea, juce::Justification::centredLeft, true);
     g.setColour (look::dim);
-    g.drawText ("L REC LOOP  O OVERDUB  M MONITOR  SHIFT+M DRY/FX  CLICK SLICE = MUTE  DRAG UP/DOWN = ANOTHER SLICE  RIGHT-CLICK = STRAIGHT  CTRL+Z = UNDO / LAST LAYER",
+    g.drawText ("L REC LOOP  O OVERDUB  M MONITOR  SHIFT+M DRY/FX  K CLICK  CLICK SLICE = MUTE  DRAG UP/DOWN = ANOTHER SLICE  RIGHT-CLICK = STRAIGHT  CTRL+Z = UNDO / LAST LAYER",
                 statusArea, juce::Justification::centredRight, true);
 }
 
@@ -1175,7 +1202,7 @@ void LooperView::resized()
     panel->setVisible (! compact && getHeight() >= kPanelMinHeight);
     for (juce::Component* c : { (juce::Component*) &recButton, (juce::Component*) &overdubButton, (juce::Component*) &barsButton,
                                 (juce::Component*) &inputButton, (juce::Component*) &monitorButton, (juce::Component*) &dryButton,
-                                (juce::Component*) &countButton, (juce::Component*) &clearButton,
+                                (juce::Component*) &countButton, (juce::Component*) &clickButton, (juce::Component*) &clearButton,
                                 (juce::Component*) &resetButton, (juce::Component*) &autoButton, (juce::Component*) &stepReadout,
                                 (juce::Component*) &loopReadout, (juce::Component*) &latencyReadout })
         c->setVisible (! compact);
@@ -1209,6 +1236,8 @@ void LooperView::resized()
     barsButton.setBounds (buttons.removeFromLeft (72));
     buttons.removeFromLeft (6);
     countButton.setBounds (buttons.removeFromLeft (80));
+    buttons.removeFromLeft (6);
+    clickButton.setBounds (buttons.removeFromLeft (80));
     buttons.removeFromLeft (18);
     inputButton.setBounds (buttons.removeFromLeft (72));
     buttons.removeFromLeft (6);

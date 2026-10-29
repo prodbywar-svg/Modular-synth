@@ -334,8 +334,10 @@ void LooperEngine::process (float* left, float* right, int numSamples)
             dryL[(size_t) i] = looper.monitor && looper.monitorDry ? il * panL : 0.0f;
             dryR[(size_t) i] = looper.monitor && looper.monitorDry ? ir * panR : 0.0f;
 
-            // the count-in: a click on every beat, higher on the bar
-            if (live && rec.status == Status::CountIn && step % 4 == 0 && stepPhase < 1.0)
+            // the count-in and the metronome: a click on every beat, higher on the bar
+            const bool clicking = rec.status == Status::CountIn || looper.metronome == kClickPlaying
+                                  || (looper.metronome == kClickRecording && rec.status == Status::Recording);
+            if (live && playing && clicking && step % 4 == 0 && stepPhase < 1.0)
             {
                 clickAge = 0;
                 clickAccent = step == 0;

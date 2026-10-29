@@ -215,7 +215,8 @@ private:
             int loops = 0;
             for (const auto& slot : l.slots)
                 loops += slot.audio != nullptr ? 1 : 0;
-            juce::String now = loopInputName (l.input) + juce::String (l.monitor ? (l.monitorDry ? " MON DRY" : " MON FX") : "");
+            juce::String now = loopInputName (l.input) + juce::String (l.monitor ? (l.monitorDry ? " MON DRY" : " MON FX") : "")
+                               + juce::String (l.metronome == kClickOff ? "" : " CLICK");
             if (readout.status == LooperEngine::Status::Waiting)
                 now = "REC WAITS FOR THE BAR";
             else if (readout.status == LooperEngine::Status::CountIn)

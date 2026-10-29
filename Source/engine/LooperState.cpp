@@ -110,6 +110,10 @@ void applyToLooper (LooperState& l, const Command& c)
         case CommandType::SetMonitorDry:
             l.monitorDry = c.value > 0.5f;
             break;
+        case CommandType::SetMetronome:
+            if (c.index >= 0 && c.index < kNumClickModes)
+                l.metronome = c.index;
+            break;
         case CommandType::SetCountIn:
             l.countIn = nearestCountIn ((int) std::lround (c.value));
             break;
@@ -197,6 +201,7 @@ juce::var looperToVar (const LooperState& l, const LoopFiles& files)
     root->setProperty ("monitor", l.monitor);
     root->setProperty ("monitorDry", l.monitorDry);
     root->setProperty ("countIn", l.countIn);
+    root->setProperty ("metronome", l.metronome);
     root->setProperty ("inputGain", l.inputGain);
     root->setProperty ("masterLevel", l.masterLevel);
     root->setProperty ("pan", l.pan);
@@ -239,6 +244,7 @@ bool looperFromVar (const juce::var& v, LooperState& out, LoopFiles& files)
     l.monitor = (bool) v.getProperty ("monitor", false);
     l.monitorDry = (bool) v.getProperty ("monitorDry", false);
     l.countIn = nearestCountIn ((int) v.getProperty ("countIn", l.countIn));
+    l.metronome = juce::jlimit (0, kNumClickModes - 1, (int) v.getProperty ("metronome", l.metronome));
     l.inputGain = clamp01 ((float) v.getProperty ("inputGain", l.inputGain));
     l.masterLevel = clamp01 ((float) v.getProperty ("masterLevel", l.masterLevel));
     l.pan = clamp01 ((float) v.getProperty ("pan", l.pan));
