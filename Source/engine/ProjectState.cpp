@@ -204,6 +204,7 @@ void applyToState (ProjectState& p, const Command& c)
         case CommandType::CancelLoopRecord:
         case CommandType::SetCountIn:
         case CommandType::SetMonitorDry:
+        case CommandType::SetMetronome:
             break;
     }
 }

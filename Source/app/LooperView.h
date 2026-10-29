@@ -39,6 +39,8 @@ public:
     void toggleMonitor();
     void toggleMonitorDry();
     void showCountInMenu();
+    void showClickMenu();
+    void setClick (int mode);
     void showInputMenu();
     void showBarsMenu();
 
@@ -75,7 +77,7 @@ private:
     const int tool;
 
     DataButton recButton { "REC LOOP" }, overdubButton { "OVERDUB" }, barsButton { "2 BARS" }, inputButton { "IN 1+2" };
-    DataButton countButton { "COUNT 1" }, dryButton { "FX" };
+    DataButton countButton { "COUNT 1" }, clickButton { "CLICK" }, dryButton { "FX" };
     DataButton monitorButton { "MON" }, clearButton { "CLEAR" }, resetButton { "RESET" }, autoButton { "AUTO" };
     std::array<DataButton, ms::kNumPatterns> patternButtons { DataButton { "P1" }, DataButton { "P2" }, DataButton { "P3" }, DataButton { "P4" } };
     DataReadout stepReadout, loopReadout, latencyReadout;

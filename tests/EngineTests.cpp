@@ -1157,6 +1157,51 @@ void testLooperCountInAndDryMonitor()
     CHECK (std::abs (wet.l[1000] - 0.5f) > 0.05f);
 }
 
+void testLooperMetronome()
+{
+    std::printf ("looper: the metronome clicks every beat while playing, live only\n");
+    auto s = looperOnlyStudio();
+    s.loopers[0].metronome = kClickPlaying;
+    auto e = liveLooper (s);
+    const auto out = playLive (*e, {}, kBar * 2, {});
+    int beats = 0;
+    for (int beat = 0; beat < 8; ++beat)
+    {
+        float peak = 0.0f;
+        for (int i = 0; i < 200; ++i)
+            peak = std::max (peak, std::abs (out.l[(size_t) (beat * 24000 + i)]));
+        beats += peak > 0.1f ? 1 : 0;
+    }
+    float between = 0.0f;
+    for (int i = 4000; i < 23000; ++i)
+        between = std::max (between, std::abs (out.l[(size_t) i]));
+    std::printf ("  %d of 8 beats click\n", beats);
+    CHECK (beats == 8 && between < 1.0e-3f);
+
+    auto offline = liveLooper (s);
+    offline->setRecordsInput (false);
+    const auto quiet = playLive (*offline, {}, kBar, {});
+    float peak = 0.0f;
+    for (auto v : quiet.l)
+        peak = std::max (peak, std::abs (v));
+    CHECK (peak <= 0.0f);
+
+    // only while recording: silent until the recording starts on the bar
+    s.loopers[0].metronome = kClickRecording;
+    auto r = liveLooper (s);
+    const auto idle = playLive (*r, {}, kBar, {});
+    float idlePeak = 0.0f;
+    for (auto v : idle.l)
+        idlePeak = std::max (idlePeak, std::abs (v));
+    CHECK (idlePeak <= 0.0f);
+    auto audio = emptyLoop (1);
+    const auto rec = playLive (*r, {}, kBar, { { 0, loopCommand (CommandType::RecordLoop, 0, 0.0f, audio.get()) } }, false);
+    float recPeak = 0.0f;
+    for (int i = 0; i < 200; ++i)
+        recPeak = std::max (recPeak, std::abs (rec.l[(size_t) i]));
+    CHECK (recPeak > 0.1f);
+}
+
 void testLooperSaveAndOpen()
 {
     std::printf ("looper settings save and open\n");
@@ -1170,6 +1215,7 @@ void testLooperSaveAndOpen()
     l.monitor = true;
     l.monitorDry = true;
     l.countIn = 2;
+    l.metronome = kClickRecording;
     l.inputGain = 0.4f;
     l.pan = 0.2f;
     l.pattern = 2;
@@ -1188,7 +1234,7 @@ void testLooperSaveAndOpen()
     const auto& m = q.loopers[0];
     CHECK (q.tools[kFirstLooperTool].active);
     CHECK (m.input == LoopInput::In2 && m.monitor && m.pattern == 2);
-    CHECK (m.monitorDry && m.countIn == 2);
+    CHECK (m.monitorDry && m.countIn == 2 && m.metronome == kClickRecording);
     CHECK (std::abs (m.inputGain - 0.4f) < 1.0e-6f && std::abs (m.pan - 0.2f) < 1.0e-6f);
     CHECK (m.slots[1].bars == 8 && m.slots[1].slices[3] == kMuteSlice && m.slots[1].slices[5] == 0 && m.slots[1].slices[6] == 6);
     CHECK (m.slots[2].audio == nullptr); // the caller loads it
@@ -1283,6 +1329,7 @@ int main (int argc, char** argv)
     testLooperLatencyAndOverdub();
     testLooperTakeReplays();
     testLooperCountInAndDryMonitor();
+    testLooperMetronome();
     testLooperSaveAndOpen();
 
     if (failures == 0)

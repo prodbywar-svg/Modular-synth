@@ -118,7 +118,7 @@ private:
         int countLeft = 0;          // count-in bars still to start
     } rec;
 
-    // the count-in click (live only, after the rack: never recorded or exported)
+    // the count-in and metronome click (live only, after the rack: never recorded or exported)
     std::vector<float> clickBuf;
     int clickAge = -1;
     bool clickAccent = false;

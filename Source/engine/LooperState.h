@@ -20,6 +20,11 @@ constexpr int kLoopLengths[kNumLoopLengths] = { 1, 2, 4, 8 }; // bars
 constexpr int kMuteSlice = -1;
 constexpr int kNumCountIns = 4;
 constexpr int kCountIns[kNumCountIns] = { 0, 1, 2, 4 }; // bars of clicks before recording
+// The metronome: a click on every beat (the count-in always clicks).
+constexpr int kClickOff = 0;
+constexpr int kClickPlaying = 1;   // whenever the transport plays
+constexpr int kClickRecording = 2; // only while this looper records
+constexpr int kNumClickModes = 3;
 
 // A recorded loop. The samples never change once the recording is done, so
 // the audio thread, exports and undo can all share one by pointer; it is owned
@@ -97,6 +102,7 @@ struct LooperState
     bool monitor = false;          // hear the input
     bool monitorDry = false;       // ... as it comes in, rather than through the rack
     int countIn = 1;               // bars of clicks before a recording starts
+    int metronome = kClickOff;
     float inputGain = 0.7071f;     // unity
     float masterLevel = 0.7071f;   // the looper's output, unity
     float pan = 0.5f;

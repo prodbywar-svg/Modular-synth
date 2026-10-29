@@ -122,6 +122,7 @@ enum class CommandType : std::uint8_t
     CancelLoopRecord, // stops waiting or recording; the slot keeps what it had
     SetCountIn,       // value = bars of clicks before a recording starts (0 = none)
     SetMonitorDry,    // value 1 = the monitored input skips the rack, 0 = through it
+    SetMetronome,     // index = kClickOff / kClickPlaying / kClickRecording
 };
 
 constexpr int kAllRacks = -2;

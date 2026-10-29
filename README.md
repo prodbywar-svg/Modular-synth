@@ -137,6 +137,7 @@ four loop slots, **P1-P4**, that switch at the end of a bar like patterns do.
 | **INPUT** | pick **IN 1** or **IN 2** (on both sides) or **IN 1+2** (a stereo pair). **AUDIO DEVICE AND INPUTS...** in the same menu picks the interface and which of its inputs are 1 and 2 |
 | **MON** / `M` | hear the input while you play (use headphones, or turn it down, to avoid feedback) |
 | **FX** / **DRY** (next to MON) / `Shift+M` | **FX**: hear the input through the looper's effects rack. **DRY**: hear it as it comes in. Recordings are always dry either way |
+| **CLICK** / `K` | the metronome: a click on every beat, higher on the 1. **ON WHILE PLAYING** or **ONLY WHILE RECORDING** (this looper recording or overdubbing); `K` turns it on and off. Like the count-in, it is never recorded or exported |
 | **COUNT 1** | the count-in: clicks on the beats for 1, 2 or 4 bars before a recording starts, or **NO COUNT**. The click is never recorded or exported |
 | **2 BARS** | how long the slot's next recording is: 1, 2, 4 or 8 bars |
 | **REC LOOP** / `L` | record into the slot on screen from the next bar (from the start when the transport is stopped: it starts it). When the bars are done the loop plays straight away. Press again to cancel |
