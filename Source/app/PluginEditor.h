@@ -3,6 +3,7 @@
 #include "BassSynthView.h"
 #include "DrumMachineView.h"
 #include "LooperView.h"
+#include "VocalView.h"
 
 class ToolStrip;
 class MasterPanel;
@@ -58,7 +59,7 @@ private:
     DataReadout bpmReadout, swingReadout, stepReadout, posReadout, rateReadout, takeReadout;
 
     std::array<std::unique_ptr<ToolStrip>, ms::kNumToolSlots> strips;
-    DataButton addDrumsButton { "+ DRUM MACHINE" }, addBassButton { "+ BASS SYNTH" }, addLooperButton { "+ LOOPER" };
+    DataButton addDrumsButton { "+ DRUM MACHINE" }, addBassButton { "+ BASS SYNTH" }, addLooperButton { "+ LOOPER" }, addVocalButton { "+ VOCAL" };
     int shownTools = -1; // which tools the strips were laid out for, one bit each
     int toolsMask() const;
     int stripsBottom() const; // where the strips and the add row end

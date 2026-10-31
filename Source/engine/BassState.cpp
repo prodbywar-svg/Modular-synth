@@ -460,6 +460,9 @@ void applyToBass (BassState& b, const Command& c)
         case CommandType::SetCountIn:
         case CommandType::SetMonitorDry:
         case CommandType::SetMetronome:
+        case CommandType::RecordVocal:
+        case CommandType::StopVocalRecord:
+        case CommandType::SetVocalClip:
             break;
     }
 }

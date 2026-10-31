@@ -1243,6 +1243,240 @@ void testLooperSaveAndOpen()
     CHECK (std::abs (m.masterFx[fxChorusMix] - 0.5f) < 1.0e-6f);
 }
 
+// ---- vocal track ---------------------------------------------------------------
+
+// A studio with just vocal track 1, at 120 BPM (a bar is kBar samples).
+StudioState vocalOnlyStudio()
+{
+    auto s = makeDefaultStudio();
+    s.bpm = 120.0f;
+    for (int t = 0; t < kNumToolSlots; ++t)
+        s.tools[(size_t) t].active = t == kFirstVocalTool;
+    for (auto& v : s.vocals)
+    {
+        v.bpm = s.bpm;
+        v.countIn = 0; // the tests below record from the first bar
+    }
+    return s;
+}
+
+Command vocalCommand (CommandType type, VocalRecording* recording = nullptr, int latency = 0, const VocalClip* clip = nullptr)
+{
+    Command c;
+    c.type = type;
+    c.tool = kFirstVocalTool;
+    c.vocal = recording;
+    c.track = latency;
+    c.clip = clip;
+    return c;
+}
+
+std::unique_ptr<StudioEngine> liveVocal (const StudioState& s)
+{
+    auto e = liveLooper (s);
+    e->setChunkSource ([] { return InputRecording::makeChunk(); });
+    return e;
+}
+
+// What the UI does with a finished recording: lays it over the clip there.
+std::unique_ptr<VocalClip> layFinished (const StudioEngine& e, const VocalClip* base, std::shared_ptr<VocalRecording> recording)
+{
+    const auto& done = e.vocal (0).lastFinished();
+    CHECK (done.recording == recording.get());
+    recording->makePeaks();
+    return std::make_unique<VocalClip> (withSegment (base, done.segment, recording));
+}
+
+void testVocalRecordsAndPlays()
+{
+    std::printf ("vocal: records from bar 1 until stopped, latency taken off, then plays along the song\n");
+    const auto s = vocalOnlyStudio();
+    auto e = liveVocal (s);
+    auto recording = std::make_shared<VocalRecording>();
+    std::vector<float> input ((size_t) (kBar * 3), 0.0f);
+    input[24100 + 480] = 0.5f;               // bar 1, arrives 10 ms late
+    input[(size_t) (kBar * 2 + 7000 + 480)] = 0.25f; // bar 3
+    const auto first = playLive (*e, input, kBar * 3 + 2000,
+                                 { { 0, vocalCommand (CommandType::RecordVocal, recording.get(), 480) },
+                                   { kBar * 3, vocalCommand (CommandType::StopVocalRecord) } });
+    CHECK (first.peak() <= 0.0f); // not monitored: silent while it records
+    CHECK (e->vocal (0).finishedCount() == 1);
+    CHECK (e->vocal (0).status() == VocalEngine::Status::Idle);
+    const auto& seg = e->vocal (0).lastFinished().segment;
+    CHECK (seg.start == 0 && seg.from == 480 && seg.length == kBar * 3 - 480);
+
+    auto clip = layFinished (*e, nullptr, recording);
+    CHECK (clip->segments.size() == 1 && clip->end() == kBar * 3 - 480);
+    CHECK (clip->peak (24000, 24200) > 0.49f && clip->peak (30000, 40000) <= 0.0f);
+    e->apply (vocalCommand (CommandType::SetVocalClip, nullptr, 0, clip.get()));
+    e->setPlaying (false);
+    const auto again = playLive (*e, {}, kBar * 4);
+    std::printf ("  played back at %lld and %lld\n", (long long) again.onset (0), (long long) again.onset (30000));
+    CHECK (again.onset (0) == 24100);
+    CHECK (std::abs (again.l[24100] - 0.5f) < 1.0e-4f);
+    CHECK (again.onset (30000) == kBar * 2 + 7000);
+    CHECK (std::abs (again.r[(size_t) (kBar * 2 + 7000)] - 0.25f) < 1.0e-4f);
+}
+
+void testVocalPunchIn()
+{
+    std::printf ("vocal: recording again from a later bar replaces only what it covers\n");
+    const auto s = vocalOnlyStudio();
+    auto e = liveVocal (s);
+    auto take1 = std::make_shared<VocalRecording>();
+    std::vector<float> input ((size_t) (kBar * 4), 0.0f);
+    for (int b = 0; b < 4; ++b)
+        input[(size_t) (b * kBar + 10000)] = 0.5f; // one hit a bar
+    playLive (*e, input, kBar * 4 + 256, { { 0, vocalCommand (CommandType::RecordVocal, take1.get()) },
+                                           { kBar * 4, vocalCommand (CommandType::StopVocalRecord) } });
+    auto clip1 = layFinished (*e, nullptr, take1);
+    e->apply (vocalCommand (CommandType::SetVocalClip, nullptr, 0, clip1.get()));
+    e->setPlaying (false);
+
+    // asked for in the middle of bar 2: it records bar 3 only
+    auto take2 = std::make_shared<VocalRecording>();
+    std::vector<float> second ((size_t) (kBar * 4), 0.0f);
+    second[(size_t) (2 * kBar + 20000)] = 0.25f;
+    const auto during = playLive (*e, second, kBar * 4, { { kBar + kBar / 2, vocalCommand (CommandType::RecordVocal, take2.get()) },
+                                                          { kBar * 3, vocalCommand (CommandType::StopVocalRecord) } });
+    // the old take plays until the new one starts, and after it ends
+    CHECK (std::abs (during.l[10000] - 0.5f) < 1.0e-4f && std::abs (during.l[(size_t) (kBar + 10000)] - 0.5f) < 1.0e-4f);
+    CHECK (std::abs (during.l[(size_t) (2 * kBar + 10000)]) < 1.0e-6f);
+    CHECK (std::abs (during.l[(size_t) (3 * kBar + 10000)] - 0.5f) < 1.0e-4f);
+    const auto& seg = e->vocal (0).lastFinished().segment;
+    CHECK (seg.start == 2 * kBar && seg.length == kBar);
+
+    auto clip2 = layFinished (*e, clip1.get(), take2);
+    CHECK (clip2->segments.size() == 3 && clip2->sources.size() == 2);
+    e->apply (vocalCommand (CommandType::SetVocalClip, nullptr, 0, clip2.get()));
+    e->setPlaying (false);
+    const auto after = playLive (*e, {}, kBar * 4);
+    CHECK (std::abs (after.l[(size_t) (kBar + 10000)] - 0.5f) < 1.0e-4f);
+    CHECK (std::abs (after.l[(size_t) (2 * kBar + 10000)]) < 1.0e-6f);
+    CHECK (std::abs (after.l[(size_t) (2 * kBar + 20000)] - 0.25f) < 1.0e-4f);
+    CHECK (std::abs (after.l[(size_t) (3 * kBar + 10000)] - 0.5f) < 1.0e-4f);
+    // the cut edges fade rather than click
+    CHECK (std::abs (after.l[(size_t) (2 * kBar)]) < 1.0e-6f);
+
+    // undo is just the clip before
+    e->apply (vocalCommand (CommandType::SetVocalClip, nullptr, 0, clip1.get()));
+    e->setPlaying (false);
+    const auto undone = playLive (*e, {}, kBar * 4);
+    CHECK (std::abs (undone.l[(size_t) (2 * kBar + 10000)] - 0.5f) < 1.0e-4f);
+}
+
+void testVocalCountInAndTakeReplays()
+{
+    std::printf ("vocal: a count-in, then a take sung over the song exports with the vocal in it\n");
+    auto s = vocalOnlyStudio();
+    s.vocals[0].countIn = 1;
+    s.vocals[0].masterFx[fxReverbMix] = 0.2f;
+    auto e = liveVocal (s);
+    auto recording = std::make_shared<VocalRecording>();
+    std::vector<float> input ((size_t) (kBar * 3), 0.0f);
+    input[5000] = 0.5f;                       // in the count-in bar: not recorded
+    input[(size_t) (kBar + 30000)] = 0.4f;    // in bar 2: recorded
+
+    Take take;
+    take.start = e->state();
+    take.sampleRate = kSr;
+    take.length = kBar * 3;
+    take.events = { { 0, vocalCommand (CommandType::RecordVocal, recording.get()) },
+                    { kBar * 2 + 5000, vocalCommand (CommandType::StopVocalRecord) } };
+    InputRecording in;
+    in.append (input.data(), input.data(), (int) input.size(), [] { return InputRecording::makeChunk(); });
+    take.input = &in;
+
+    const auto live = playLive (*e, input, take.length, take.events);
+    CHECK (e->vocal (0).finishedCount() == 1);
+    const auto& seg = e->vocal (0).lastFinished().segment;
+    CHECK (seg.start == kBar && seg.length == kBar + 5000);
+    std::vector<float> l (8), r (8);
+    recording->audio.read (30000, l.data(), r.data(), 1);
+    CHECK (std::abs (l[0] - 0.4f) < 1.0e-4f);
+    // live it was not monitored (silent apart from the count-in clicks)...
+    float liveAfterCount = 0.0f;
+    for (std::int64_t i = kBar; i < kBar * 3; ++i)
+        liveAfterCount = std::max (liveAfterCount, std::abs (live.l[(size_t) i]));
+    CHECK (liveAfterCount <= 0.0f);
+    // ...but the export hears what was recorded, through the rack, and no clicks
+    const auto exported = render (take, -1, take.length);
+    std::printf ("  export onset %lld, peak %.3f\n", (long long) exported.onset (0), (double) exported.peak());
+    CHECK (exported.onset (0) == kBar + 30000);
+    CHECK (exported.peak() > 0.2f && exported.finite());
+
+    auto folder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("ms-vocal-export-test");
+    folder.deleteRecursively();
+    ExportOptions opt;
+    opt.folder = folder;
+    opt.baseName = "t";
+    CHECK (exportTake (take, opt).ok);
+    CHECK (folder.getChildFile ("t_VOX-1.wav").existsAsFile());
+    folder.deleteRecursively();
+}
+
+void testVocalStopKeepsTheTake()
+{
+    std::printf ("vocal: STOP while recording keeps what was sung, and so does running out of room\n");
+    const auto s = vocalOnlyStudio();
+    auto e = liveVocal (s);
+    auto recording = std::make_shared<VocalRecording>();
+    std::vector<float> input ((size_t) kBar, 0.0f);
+    input[1000] = 0.5f;
+    playLive (*e, input, kBar / 2, { { 0, vocalCommand (CommandType::RecordVocal, recording.get()) } });
+    e->setPlaying (false);
+    CHECK (e->vocal (0).finishedCount() == 1);
+    CHECK (e->vocal (0).lastFinished().segment.length == kBar / 2);
+
+    // without room for the recording it ends, keeping what it had
+    auto starved = std::make_unique<StudioEngine>();
+    starved->prepare (kSr, 256);
+    starved->setState (s);
+    starved->reset();
+    starved->setRecordsInput (true);
+    int chunks = 1;
+    starved->setChunkSource ([&chunks] { return chunks-- > 0 ? InputRecording::makeChunk() : nullptr; });
+    auto small = std::make_shared<VocalRecording>();
+    playLive (*starved, {}, InputRecording::kChunkSamples * 2, { { 0, vocalCommand (CommandType::RecordVocal, small.get()) } });
+    CHECK (starved->vocal (0).status() == VocalEngine::Status::Idle);
+    CHECK (starved->vocal (0).finishedCount() == 1 && starved->vocal (0).lastFinished().segment.length == InputRecording::kChunkSamples);
+}
+
+void testVocalSaveAndOpen()
+{
+    std::printf ("vocal settings save and open\n");
+    auto s = vocalOnlyStudio();
+    VocalClip clip;
+    VocalRecording rec;
+    clip.segments.push_back ({ &rec, 100, 0, 50 });
+    auto& v = s.vocals[0];
+    v.input = LoopInput::Stereo;
+    v.monitor = true;
+    v.monitorDry = true;
+    v.countIn = 2;
+    v.metronome = kClickPlaying;
+    v.inputGain = 0.3f;
+    v.pan = 0.7f;
+    v.clip = &clip;
+    v.masterFx[fxDelayMix] = 0.4f;
+    std::array<VocalFile, kMaxVocals> files;
+    files[0] = { "x loops/VOX-1.wav", 96000 };
+
+    StudioState q;
+    std::array<juce::String, kNumTracks> paths;
+    std::array<LoopFiles, kMaxLoopers> loops;
+    std::array<VocalFile, kMaxVocals> opened;
+    CHECK (studioFromVar (juce::JSON::parse (juce::JSON::toString (studioToVar (s, {}, files))), q, paths, &loops, &opened));
+    const auto& m = q.vocals[0];
+    CHECK (q.tools[kFirstVocalTool].active && ! q.tools[kFirstVocalTool + 1].active);
+    CHECK (m.input == LoopInput::Stereo && m.monitor && m.monitorDry && m.countIn == 2 && m.metronome == kClickPlaying);
+    CHECK (std::abs (m.inputGain - 0.3f) < 1.0e-6f && std::abs (m.pan - 0.7f) < 1.0e-6f);
+    CHECK (std::abs (m.masterFx[fxDelayMix] - 0.4f) < 1.0e-6f);
+    CHECK (m.clip == nullptr); // the caller loads it
+    CHECK (opened[0].file == "x loops/VOX-1.wav" && opened[0].start == 96000);
+    CHECK (std::string (toolName (kFirstVocalTool)) == "VOX-1" && toolKind (kFirstVocalTool + 3) == ToolKind::Vocal);
+}
+
 } // namespace
 
 // EngineTests --demo <folder>: renders the starter patterns (master + stems)
@@ -1331,6 +1565,11 @@ int main (int argc, char** argv)
     testLooperCountInAndDryMonitor();
     testLooperMetronome();
     testLooperSaveAndOpen();
+    testVocalRecordsAndPlays();
+    testVocalPunchIn();
+    testVocalCountInAndTakeReplays();
+    testVocalStopKeepsTheTake();
+    testVocalSaveAndOpen();
 
     if (failures == 0)
         std::printf ("\nall engine tests passed\n");

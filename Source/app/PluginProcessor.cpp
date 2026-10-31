@@ -25,7 +25,8 @@ ModularSynthProcessor::ModularSynthProcessor()
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
 {
     loadHr16Bank();
-    static_assert (kNumTracks <= kLanesPerTool && kBassRows <= kLanesPerTool && kLooperTracks <= kLanesPerTool);
+    static_assert (kNumTracks <= kLanesPerTool && kBassRows <= kLanesPerTool && kLooperTracks <= kLanesPerTool
+                   && kVocalTracks <= kLanesPerTool);
     for (auto& q : queuedPatterns)
         q = -1;
     for (auto& p : looperPosition)
@@ -33,6 +34,7 @@ ModularSynthProcessor::ModularSynthProcessor()
     for (auto& t : takes)
         t.events.reserve (kMaxRecordedEvents);
     engine.setRecordsInput (true);
+    engine.setChunkSource ([this] { return takeChunk(); });
 }
 
 ModularSynthProcessor::~ModularSynthProcessor()
@@ -179,6 +181,31 @@ void ModularSynthProcessor::replaceStudio (const StudioState& s)
         cmd (CommandType::SelectPattern, tool, 0, looper.pattern, 0.0f);
     }
 
+    for (int v = 0; v < kMaxVocals; ++v)
+    {
+        const int tool = kFirstVocalTool + v;
+        if (! s.tools[(size_t) tool].active)
+            continue;
+        const auto& vocal = s.vocals[(size_t) v];
+        cmd (CommandType::StopVocalRecord, tool, 0, 0, 0.0f);
+        cmd (CommandType::SetLoopInput, tool, 0, (int) vocal.input, 0.0f);
+        cmd (CommandType::SetLoopMonitor, tool, 0, 0, vocal.monitor ? 1.0f : 0.0f);
+        cmd (CommandType::SetMonitorDry, tool, 0, 0, vocal.monitorDry ? 1.0f : 0.0f);
+        cmd (CommandType::SetCountIn, tool, 0, 0, (float) vocal.countIn);
+        cmd (CommandType::SetMetronome, tool, 0, vocal.metronome, 0.0f);
+        cmd (CommandType::SetInputGain, tool, 0, 0, vocal.inputGain);
+        cmd (CommandType::SetMasterLevel, tool, 0, 0, vocal.masterLevel);
+        cmd (CommandType::SetPan, tool, 0, 0, vocal.pan);
+        for (int i = 0; i < kNumFxParams; ++i)
+            cmd (CommandType::SetFxParam, tool, -1, i, vocal.masterFx[(size_t) i]);
+        Command c;
+        c.type = CommandType::SetVocalClip;
+        c.tool = tool;
+        c.clip = vocal.clip;
+        send (c);
+        vocalUndo[(size_t) v].clear();
+    }
+
     // effect automation: clear every rack, then send each recorded point
     auto automation = [&cmd] (int tool, int rack, const FxAutomation& a) {
         for (int pat = 0; pat < kNumPatterns; ++pat)
@@ -213,6 +240,14 @@ void ModularSynthProcessor::replaceStudio (const StudioState& s)
             continue;
         cmd (CommandType::ClearFxAuto, tool, -1, -1, -1.0f);
         automation (tool, -1, s.loopers[(size_t) l].masterFxAuto);
+    }
+    for (int v = 0; v < kMaxVocals; ++v)
+    {
+        const int tool = kFirstVocalTool + v;
+        if (! s.tools[(size_t) tool].active)
+            continue;
+        cmd (CommandType::ClearFxAuto, tool, -1, -1, -1.0f);
+        automation (tool, -1, s.vocals[(size_t) v].masterFxAuto);
     }
 
     cmd (CommandType::SetBpm, kStudio, 0, 0, s.bpm);
@@ -289,6 +324,43 @@ bool writeLoop (const LoopAudio& audio, const juce::File& file)
     const float* chans[] = { audio.left.data(), audio.right.data() };
     return writer->writeFromFloatArrays (chans, 2, audio.length);
 }
+
+// A vocal track's clip, every piece of it in place, from where it starts:
+// mono when both sides are the same (one input), 32-bit float like the loops.
+bool writeVocal (const VocalClip& clip, double sampleRate, const juce::File& file)
+{
+    constexpr int kBlock = 4096;
+    std::vector<float> l (kBlock), r (kBlock);
+    bool mono = true;
+    for (auto pos = clip.start(); pos < clip.end() && mono; pos += kBlock)
+    {
+        const int n = (int) std::min<std::int64_t> (kBlock, clip.end() - pos);
+        clip.read (pos, l.data(), r.data(), n);
+        mono = std::equal (l.begin(), l.begin() + n, r.begin());
+    }
+
+    file.deleteFile();
+    std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (file);
+    if (static_cast<juce::FileOutputStream*> (stream.get())->failedToOpen())
+        return false;
+    juce::WavAudioFormat wav;
+    auto writer = wav.createWriterFor (stream, juce::AudioFormatWriterOptions {}
+                                                   .withSampleRate (sampleRate)
+                                                   .withNumChannels (mono ? 1 : 2)
+                                                   .withBitsPerSample (32)
+                                                   .withSampleFormat (juce::AudioFormatWriterOptions::SampleFormat::floatingPoint));
+    if (writer == nullptr)
+        return false;
+    for (auto pos = clip.start(); pos < clip.end(); pos += kBlock)
+    {
+        const int n = (int) std::min<std::int64_t> (kBlock, clip.end() - pos);
+        clip.read (pos, l.data(), r.data(), n);
+        const float* chans[] = { l.data(), r.data() };
+        if (! writer->writeFromFloatArrays (chans, mono ? 1 : 2, n))
+            return false;
+    }
+    return true;
+}
 } // namespace
 
 juce::var ModularSynthProcessor::studioVarWithLoops (const juce::File& folder, bool relative)
@@ -323,7 +395,30 @@ juce::var ModularSynthProcessor::studioVarWithLoops (const juce::File& folder, b
             files[(size_t) l][(size_t) slot].file = relative ? folder.getFileName() + "/" + file.getFileName() : file.getFullPathName();
         }
     }
-    return studioToVar (uiState, files);
+
+    std::array<VocalFile, kMaxVocals> vocalFiles;
+    for (int v = 0; v < kMaxVocals; ++v)
+    {
+        const int tool = kFirstVocalTool + v;
+        const auto* clip = uiState.vocals[(size_t) v].clip;
+        if (! uiState.tools[(size_t) tool].active || clip == nullptr || clip->empty())
+            continue;
+        auto* held = const_cast<VocalClip*> (clip); // only its file name changes
+        auto file = folder.getChildFile (juce::String (toolName (tool)) + ".wav");
+        if (! relative && held->file.isNotEmpty() && juce::File (held->file).existsAsFile())
+            file = juce::File (held->file);
+        else
+        {
+            folder.createDirectory();
+            const double sr = clip->segments.front().source->sampleRate;
+            if (! writeVocal (*clip, sr, file))
+                continue;
+            held->file = file.getFullPathName();
+        }
+        vocalFiles[(size_t) v].file = relative ? folder.getFileName() + "/" + file.getFileName() : file.getFullPathName();
+        vocalFiles[(size_t) v].start = clip->start();
+    }
+    return studioToVar (uiState, files, vocalFiles);
 }
 
 void ModularSynthProcessor::loadLoops (StudioState& s, const std::array<LoopFiles, kMaxLoopers>& files, const juce::File& base,
@@ -363,6 +458,43 @@ void ModularSynthProcessor::loadLoops (StudioState& s, const std::array<LoopFile
     }
 }
 
+void ModularSynthProcessor::loadVocals (StudioState& s, const std::array<VocalFile, kMaxVocals>& files, const juce::File& base,
+                                        juce::String& error)
+{
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    for (int v = 0; v < kMaxVocals; ++v)
+    {
+        const auto& f = files[(size_t) v];
+        if (f.file.isEmpty())
+            continue;
+        const auto file = juce::File::isAbsolutePath (f.file) ? juce::File (f.file) : base.getChildFile (f.file);
+        std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
+        if (reader == nullptr || reader->lengthInSamples <= 1)
+        {
+            error = "Missing vocal: " + file.getFullPathName();
+            continue;
+        }
+        auto vocalTake = std::make_shared<VocalRecording>();
+        vocalTake->sampleRate = reader->sampleRate;
+        constexpr int kBlock = 1 << 14;
+        juce::AudioBuffer<float> buffer (2, kBlock);
+        const auto length = juce::jmin (reader->lengthInSamples, (juce::int64) InputRecording::kChunkSamples * InputRecording::kMaxChunks);
+        for (juce::int64 pos = 0; pos < length; pos += kBlock)
+        {
+            const int n = (int) juce::jmin ((juce::int64) kBlock, length - pos);
+            reader->read (&buffer, 0, n, pos, true, true);
+            vocalTake->audio.append (buffer.getReadPointer (0), buffer.getReadPointer (1), n, [] { return InputRecording::makeChunk(); });
+        }
+        vocalTake->makePeaks();
+        VocalClip clip;
+        clip.segments.push_back ({ vocalTake.get(), f.start, 0, vocalTake->audio.length });
+        clip.sources.push_back (vocalTake);
+        clip.file = file.getFullPathName();
+        s.vocals[(size_t) v].clip = newClip (std::move (clip));
+    }
+}
+
 void ModularSynthProcessor::loadSamplePaths (StudioState& s, const std::array<juce::String, kNumTracks>& paths, juce::String& error)
 {
     for (int t = 0; t < kNumTracks; ++t)
@@ -383,7 +515,8 @@ bool ModularSynthProcessor::openProject (const juce::File& file, juce::String& e
     StudioState s;
     std::array<juce::String, kNumTracks> paths;
     std::array<LoopFiles, kMaxLoopers> loopFiles;
-    if (! studioFromVar (v, s, paths, &loopFiles))
+    std::array<VocalFile, kMaxVocals> vocalFiles;
+    if (! studioFromVar (v, s, paths, &loopFiles, &vocalFiles))
     {
         error = file.getFileName() + " is not a Modular-synth project";
         return false;
@@ -391,6 +524,7 @@ bool ModularSynthProcessor::openProject (const juce::File& file, juce::String& e
 
     loadSamplePaths (s, paths, error);
     loadLoops (s, loopFiles, file.getParentDirectory(), error);
+    loadVocals (s, vocalFiles, file.getParentDirectory(), error);
     replaceStudio (s);
     windowLayout = v.getProperty ("windows", {});
     ++windowLayoutVersion;
@@ -411,6 +545,8 @@ juce::String ModularSynthProcessor::trackName (int tool, int track) const
         return bassSoundName (uiState.bass[(size_t) b].rows[(size_t) track].sound);
     if (looperIndex (tool) >= 0)
         return track == kInputTrack ? "INPUT" : "LOOP";
+    if (vocalIndex (tool) >= 0)
+        return track == kVocalInputTrack ? "INPUT" : "VOCAL";
     return trackName (track);
 }
 
@@ -459,16 +595,25 @@ void ModularSynthProcessor::holdTake (Take& take) const
             hold (slot.audio);
     for (const auto& e : take.events)
         hold (e.command.loop);
+    auto holdVocal = [this, &take] (const VocalClip* clip) {
+        if (clip != nullptr)
+            if (auto h = holdClip (clip))
+                take.held.push_back (h);
+    };
+    for (const auto& v : take.start.vocals)
+        holdVocal (v.clip);
+    for (const auto& e : take.events)
+        holdVocal (e.command.clip);
     if (take.input != nullptr)
         for (const auto& in : inputs)
             if (in.get() == take.input)
                 take.held.push_back (in);
 }
 
-bool ModularSynthProcessor::anyLooper() const
+bool ModularSynthProcessor::anyInputTool() const
 {
-    for (int l = 0; l < kMaxLoopers; ++l)
-        if (uiState.tools[(size_t) (kFirstLooperTool + l)].active)
+    for (int t = kFirstLooperTool; t < kNumToolSlots; ++t)
+        if ((toolKind (t) == ToolKind::Looper || toolKind (t) == ToolKind::Vocal) && uiState.tools[(size_t) t].active)
             return true;
     return false;
 }
@@ -575,6 +720,132 @@ ModularSynthProcessor::LooperReadout ModularSynthProcessor::looperReadout (int t
     return r;
 }
 
+// ---- vocal tracks ----------------------------------------------------------------
+
+const VocalClip* ModularSynthProcessor::newClip (VocalClip&& clip)
+{
+    auto held = std::make_shared<VocalClip> (std::move (clip));
+    clips.push_back ({ held, juce::Time::getMillisecondCounter() });
+    return held.get();
+}
+
+std::shared_ptr<const VocalClip> ModularSynthProcessor::holdClip (const VocalClip* clip) const
+{
+    for (const auto& h : clips)
+        if (h.clip.get() == clip)
+            return h.clip;
+    return {};
+}
+
+void ModularSynthProcessor::recordVocal (int tool)
+{
+    const int v = vocalIndex (tool);
+    if (v < 0)
+        return;
+    // the one before may still be in the audio thread's hands for a moment
+    if (vocalRecordings[(size_t) v] != nullptr)
+        retiredRecordings.push_back ({ std::move (vocalRecordings[(size_t) v]), juce::Time::getMillisecondCounter() });
+    auto vocalTake = std::make_shared<VocalRecording>();
+    vocalTake->sampleRate = getEngineSampleRate();
+    vocalRecordings[(size_t) v] = vocalTake;
+    Command c;
+    c.type = CommandType::RecordVocal;
+    c.tool = tool;
+    c.vocal = vocalTake.get();
+    send (c);
+    topUpInputChunks(); // room for it right away
+}
+
+void ModularSynthProcessor::stopVocalRecord (int tool)
+{
+    Command c;
+    c.type = CommandType::StopVocalRecord;
+    c.tool = tool;
+    send (c);
+}
+
+void ModularSynthProcessor::pushVocalLayer (int vocal, const VocalClip* previous)
+{
+    auto& stack = vocalUndo[(size_t) vocal];
+    stack.push_back (holdClip (previous)); // null = it was empty
+    if (stack.size() > kMaxLayers)
+        stack.erase (stack.begin());
+}
+
+void ModularSynthProcessor::setVocalClip (int tool, const VocalClip* clip)
+{
+    const int v = vocalIndex (tool);
+    if (v < 0 || uiState.vocals[(size_t) v].clip == clip)
+        return;
+    pushVocalLayer (v, uiState.vocals[(size_t) v].clip);
+    Command c;
+    c.type = CommandType::SetVocalClip;
+    c.tool = tool;
+    c.clip = clip;
+    send (c);
+}
+
+bool ModularSynthProcessor::undoVocal (int tool)
+{
+    const int v = vocalIndex (tool);
+    if (v < 0 || vocalUndo[(size_t) v].empty())
+        return false;
+    auto& stack = vocalUndo[(size_t) v];
+    const auto previous = stack.back();
+    stack.pop_back();
+    Command c;
+    c.type = CommandType::SetVocalClip;
+    c.tool = tool;
+    c.clip = previous.get();
+    send (c);
+    return true;
+}
+
+int ModularSynthProcessor::vocalLayers (int tool) const
+{
+    const int v = vocalIndex (tool);
+    return v < 0 ? 0 : (int) vocalUndo[(size_t) v].size();
+}
+
+ModularSynthProcessor::VocalReadout ModularSynthProcessor::vocalReadout (int tool) const
+{
+    VocalReadout r;
+    const int v = vocalIndex (tool);
+    if (v < 0)
+        return r;
+    r.status = (VocalEngine::Status) vocalStatus[(size_t) v].load();
+    r.countBeats = vocalCount[(size_t) v].load();
+    r.recordStart = vocalStart[(size_t) v].load();
+    r.recorded = vocalRecorded[(size_t) v].load();
+    r.position = vocalPosition[(size_t) v].load();
+    return r;
+}
+
+void ModularSynthProcessor::takeFinishedVocals()
+{
+    // a finished recording is laid over the track's clip, which then plays it
+    const auto scope = finishedVocalFifo.read (finishedVocalFifo.getNumReady());
+    auto take = [this] (const FinishedVocal& f) {
+        std::shared_ptr<VocalRecording> vocalTake;
+        if (vocalRecordings[(size_t) f.vocal].get() == f.done.recording)
+            vocalTake = vocalRecordings[(size_t) f.vocal];
+        for (const auto& r : retiredRecordings)
+            if (r.recording.get() == f.done.recording)
+                vocalTake = r.recording;
+        if (vocalTake == nullptr)
+            return;
+        vocalTake->makePeaks();
+        const int tool = kFirstVocalTool + f.vocal;
+        const auto* clip = newClip (withSegment (uiState.vocals[(size_t) f.vocal].clip, f.done.segment, vocalTake));
+        if (uiState.tools[(size_t) tool].active)
+            setVocalClip (tool, clip);
+    };
+    for (int i = 0; i < scope.blockSize1; ++i)
+        take (finishedVocals[(size_t) (scope.startIndex1 + i)]);
+    for (int i = 0; i < scope.blockSize2; ++i)
+        take (finishedVocals[(size_t) (scope.startIndex2 + i)]);
+}
+
 void ModularSynthProcessor::collectLoops()
 {
     // A loop nothing refers to any more (the studio, undo, a take, a
@@ -594,6 +865,21 @@ void ModularSynthProcessor::collectLoops()
     loops.erase (std::remove_if (loops.begin(), loops.end(), [now] (const HeldLoop& h) { return now - h.lastUsed > 10000; }),
                  loops.end());
 
+    // the same for vocal clips; a recording lives on in the clips that play it
+    for (auto& h : clips)
+    {
+        bool used = h.clip.use_count() > 1;
+        for (const auto& v : uiState.vocals)
+            used = used || v.clip == h.clip.get();
+        if (used)
+            h.lastUsed = now;
+    }
+    clips.erase (std::remove_if (clips.begin(), clips.end(), [now] (const HeldClip& h) { return now - h.lastUsed > 10000; }),
+                 clips.end());
+    retiredRecordings.erase (std::remove_if (retiredRecordings.begin(), retiredRecordings.end(),
+                                             [now] (const RetiredRecording& r) { return now - r.since > 10000; }),
+                             retiredRecordings.end());
+
     // the newest two may belong to a take not collected yet
     for (size_t i = 0; i + 2 < inputs.size();)
     {
@@ -608,7 +894,7 @@ void ModularSynthProcessor::topUpInputChunks()
 {
     if (nextInput.load() == nullptr && pendingInput != nullptr)
         inputs.push_back (std::move (pendingInput)); // the audio thread took it
-    if (! anyLooper())
+    if (! anyInputTool())
         return;
     // a take's input recording waiting for the next REC
     if (pendingInput == nullptr)
@@ -680,6 +966,7 @@ void ModularSynthProcessor::syncPatternFromEngine()
         take (finishedLoops[(size_t) (scope.startIndex1 + i)]);
     for (int i = 0; i < scope.blockSize2; ++i)
         take (finishedLoops[(size_t) (scope.startIndex2 + i)]);
+    takeFinishedVocals();
 
     topUpInputChunks();
     const auto now = juce::Time::getMillisecondCounter();
@@ -790,6 +1077,20 @@ void ModularSynthProcessor::handleOnAudioThread (const Command& c)
             w.track = looper.recordLatency();
         }
 
+        std::array<Command, kMaxVocals> vocalsWaiting;
+        int numVocalsWaiting = 0;
+        for (int v = 0; v < kMaxVocals; ++v)
+        {
+            const auto& vocal = engine.vocal (v);
+            if (vocal.status() != VocalEngine::Status::Waiting && vocal.status() != VocalEngine::Status::CountIn)
+                continue;
+            auto& w = vocalsWaiting[(size_t) numVocalsWaiting++];
+            w.type = CommandType::RecordVocal;
+            w.tool = kFirstVocalTool + v;
+            w.vocal = vocal.recordBuffer();
+            w.track = vocal.recordLatency();
+        }
+
         finishRecording();
         // Start from silence at step 1, exactly like the offline export will.
         engine.setPlaying (false);
@@ -813,8 +1114,13 @@ void ModularSynthProcessor::handleOnAudioThread (const Command& c)
             engine.apply (waiting[(size_t) i]);
             recordEvent (waiting[(size_t) i]);
         }
+        for (int i = 0; i < numVocalsWaiting; ++i)
+        {
+            engine.apply (vocalsWaiting[(size_t) i]);
+            recordEvent (vocalsWaiting[(size_t) i]);
+        }
     }
-    else if (c.type == CommandType::RecordLoop)
+    else if (c.type == CommandType::RecordLoop || c.type == CommandType::RecordVocal)
     {
         auto withLatency = c;
         withLatency.track = inputLatency.load();
@@ -969,6 +1275,25 @@ void ModularSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
                 finishedLoops[(size_t) w.startIndex2] = f;
         }
     }
+    for (int v = 0; v < kMaxVocals; ++v)
+    {
+        const auto& vocal = engine.vocal (v);
+        vocalStatus[(size_t) v] = (int) vocal.status();
+        vocalCount[(size_t) v] = vocal.countInBeats();
+        vocalStart[(size_t) v] = vocal.recordStart();
+        vocalRecorded[(size_t) v] = vocal.recordedLength();
+        vocalPosition[(size_t) v] = vocal.timelinePosition();
+        if (vocal.finishedCount() != finishedVocalSeen[(size_t) v])
+        {
+            finishedVocalSeen[(size_t) v] = vocal.finishedCount();
+            const auto w = finishedVocalFifo.write (1);
+            const FinishedVocal f { v, vocal.lastFinished() };
+            if (w.blockSize1 > 0)
+                finishedVocals[(size_t) w.startIndex1] = f;
+            else if (w.blockSize2 > 0)
+                finishedVocals[(size_t) w.startIndex2] = f;
+        }
+    }
     playingFlag = engine.isPlaying();
     recordingFlag = recording;
     stepIndex = engine.currentStep();
@@ -1002,12 +1327,14 @@ void ModularSynthProcessor::setStateInformation (const void* data, int size)
     StudioState s;
     std::array<juce::String, kNumTracks> paths;
     std::array<LoopFiles, kMaxLoopers> loopFiles;
-    if (! studioFromVar (v, s, paths, &loopFiles))
+    std::array<VocalFile, kMaxVocals> vocalFiles;
+    if (! studioFromVar (v, s, paths, &loopFiles, &vocalFiles))
         return;
 
     juce::String error;
     loadSamplePaths (s, paths, error);
     loadLoops (s, loopFiles, {}, error);
+    loadVocals (s, vocalFiles, {}, error);
     replaceStudio (s);
     windowLayout = v.getProperty ("windows", {});
     ++windowLayoutVersion;

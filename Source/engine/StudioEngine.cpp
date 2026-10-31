@@ -16,6 +16,8 @@ void StudioEngine::prepare (double sampleRate, int maxBlockSize)
         b.prepare (sr, maxBlock);
     for (auto& l : looperEngines)
         l.prepare (sr, maxBlock);
+    for (auto& v : vocalEngines)
+        v.prepare (sr, maxBlock);
     masterFx.prepare (sr);
     reset();
 }
@@ -27,10 +29,13 @@ void StudioEngine::reset()
         b.reset();
     for (auto& l : looperEngines)
         l.reset();
+    for (auto& v : vocalEngines)
+        v.reset();
     masterFx.setParams (studio.masterFx, studio.bpm);
     masterFx.reset();
     step = 0;
     stepPhase = 0.0;
+    played = 0;
 }
 
 StudioState StudioEngine::state() const
@@ -41,6 +46,8 @@ StudioState StudioEngine::state() const
         s.bass[(size_t) b] = bassEngines[(size_t) b].state();
     for (int l = 0; l < kMaxLoopers; ++l)
         s.loopers[(size_t) l] = looperEngines[(size_t) l].state();
+    for (int v = 0; v < kMaxVocals; ++v)
+        s.vocals[(size_t) v] = vocalEngines[(size_t) v].state();
     return s;
 }
 
@@ -64,6 +71,13 @@ void StudioEngine::setState (const StudioState& s)
         looper.bpm = s.bpm;
         looper.swing = s.swing;
         looperEngines[(size_t) l].setState (looper);
+    }
+    for (int v = 0; v < kMaxVocals; ++v)
+    {
+        auto vocal = s.vocals[(size_t) v];
+        vocal.bpm = s.bpm;
+        vocal.swing = s.swing;
+        vocalEngines[(size_t) v].setState (vocal);
     }
 }
 
@@ -99,6 +113,14 @@ void StudioEngine::addTool (int tool)
         if (playing)
             engine.joinClock (step, stepPhase);
     }
+    else if (const int v = vocalIndex (tool); v >= 0)
+    {
+        auto& engine = vocalEngines[(size_t) v];
+        engine.setState (fresh.vocals[(size_t) v]);
+        engine.reset();
+        if (playing)
+            engine.joinClock (step, stepPhase, played);
+    }
 }
 
 void StudioEngine::apply (const Command& c)
@@ -111,6 +133,8 @@ void StudioEngine::apply (const Command& c)
             b.apply (c);
         for (auto& l : looperEngines)
             l.apply (c);
+        for (auto& v : vocalEngines)
+            v.apply (c);
         return;
     }
     if (c.type == CommandType::AddTool)
@@ -132,6 +156,8 @@ void StudioEngine::apply (const Command& c)
         bassEngines[(size_t) b].apply (c);
     else if (const int l = looperIndex (c.tool); l >= 0)
         looperEngines[(size_t) l].apply (c);
+    else if (const int v = vocalIndex (c.tool); v >= 0)
+        vocalEngines[(size_t) v].apply (c);
 }
 
 void StudioEngine::setPlaying (bool shouldPlay)
@@ -140,6 +166,7 @@ void StudioEngine::setPlaying (bool shouldPlay)
     {
         step = 0;
         stepPhase = 0.0;
+        played = 0;
     }
     playing = shouldPlay;
     drumEngine.setPlaying (shouldPlay);
@@ -147,6 +174,8 @@ void StudioEngine::setPlaying (bool shouldPlay)
         b.setPlaying (shouldPlay);
     for (auto& l : looperEngines)
         l.setPlaying (shouldPlay);
+    for (auto& v : vocalEngines)
+        v.setPlaying (shouldPlay);
 }
 
 void StudioEngine::setInput (const float* left, const float* right)
@@ -159,6 +188,14 @@ void StudioEngine::setRecordsInput (bool b)
 {
     for (auto& l : looperEngines)
         l.setRecordsInput (b);
+    for (auto& v : vocalEngines)
+        v.setRecordsInput (b);
+}
+
+void StudioEngine::setChunkSource (std::function<float*()> f)
+{
+    for (auto& v : vocalEngines)
+        v.setChunkSource (f);
 }
 
 void StudioEngine::setSoloRender (int tool, int track)
@@ -175,6 +212,8 @@ float StudioEngine::trackPeak (int tool, int track) const
         return drumEngine.trackPeak (track);
     if (const int l = looperIndex (tool); l >= 0)
         return looperEngines[(size_t) l].trackPeak (track);
+    if (const int v = vocalIndex (tool); v >= 0)
+        return vocalEngines[(size_t) v].trackPeak (track);
     const int b = bassIndex (tool);
     return b >= 0 ? bassEngines[(size_t) b].trackPeak (track) : 0.0f;
 }
@@ -185,6 +224,8 @@ const float* StudioEngine::trackOutput (int tool, int track) const
         return drumEngine.trackOutput (track);
     if (const int l = looperIndex (tool); l >= 0)
         return looperEngines[(size_t) l].trackOutput (track);
+    if (const int v = vocalIndex (tool); v >= 0)
+        return vocalEngines[(size_t) v].trackOutput (track);
     const int b = bassIndex (tool);
     return b >= 0 ? bassEngines[(size_t) b].trackOutput (track) : nullptr;
 }
@@ -220,6 +261,8 @@ float StudioEngine::busPeak (int tool) const
         return drumEngine.masterPeak();
     if (const int l = looperIndex (tool); l >= 0)
         return looperEngines[(size_t) l].masterPeak();
+    if (const int v = vocalIndex (tool); v >= 0)
+        return vocalEngines[(size_t) v].masterPeak();
     const int b = bassIndex (tool);
     return b >= 0 ? bassEngines[(size_t) b].masterPeak() : 0.0f;
 }
@@ -252,6 +295,8 @@ void StudioEngine::processTool (int tool, float* left, float* right, int n)
         bassEngines[(size_t) b].process (left, right, n);
     else if (const int l = looperIndex (tool); l >= 0)
         looperEngines[(size_t) l].process (left, right, n);
+    else if (const int v = vocalIndex (tool); v >= 0)
+        vocalEngines[(size_t) v].process (left, right, n);
 }
 
 void StudioEngine::process (float* left, float* right, int numSamples)
@@ -271,6 +316,8 @@ void StudioEngine::process (float* left, float* right, int numSamples)
         // 1. each tool, summed while it is audible
         for (auto& l : looperEngines)
             l.setInput (inL != nullptr ? inL + offset : nullptr, inR != nullptr ? inR + offset : nullptr);
+        for (auto& v : vocalEngines)
+            v.setInput (inL != nullptr ? inL + offset : nullptr, inR != nullptr ? inR + offset : nullptr);
         for (int t = 0; t < kNumToolSlots; ++t)
         {
             toolPeaks[(size_t) t] = 0.0f;
@@ -295,6 +342,7 @@ void StudioEngine::process (float* left, float* right, int numSamples)
         if (playing)
         {
             const double stepLen = samplesPerStep();
+            played += n;
             for (int i = 0; i < n; ++i)
             {
                 stepPhase += 1.0;

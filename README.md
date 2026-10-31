@@ -32,12 +32,12 @@ The app opens two windows:
 - the **studio window**: PLAY / STOP / REC, EXPORT, SAVE / OPEN, tempo and swing,
   one row per tool, and the studio **MASTER** effects rack that every tool goes through;
 - a window for each **tool**: the **drum machine**, up to four **bass synths**
-  and up to four **loopers** for your audio interface.
+  up to four **loopers** and up to four **vocal tracks** for your audio interface.
 
 Each tool's row in the studio window shows its sound as a scrolling barcode, its
 **LEVEL**, **M** / **S** (mute / solo the whole tool), **OPEN** / **HIDE** for its
 window, and **REMOVE**, which takes it out of the project (it asks first).
-**+ BASS SYNTH**, **+ LOOPER** (and **+ DRUM MACHINE** once it has been removed) under the rows
+**+ BASS SYNTH**, **+ LOOPER**, **+ VOCAL** (and **+ DRUM MACHINE** once it has been removed) under the rows
 adds a fresh tool, already in time with the others. Closing a tool's window only
 hides it: it keeps playing.
 
@@ -156,6 +156,31 @@ land on the beat. A loop keeps its bars when the tempo changes, playing faster o
 slower. The looper's rack and its **IN GAIN**, **LEVEL** and **PAN** are in the panel under
 the rows. Saving a project writes each loop as a WAV file in a folder next to it
 (`<project> loops`).
+
+## The vocal track
+
+Records your audio interface straight along the song, the way a DAW track does.
+PLAY always starts at bar 1, so the recording plays back exactly where it was
+sung, on every PLAY and in every export. Each vocal track has its own input, gain,
+monitoring and effects rack, so (for example) a looper can take IN 2 while a
+vocal track takes IN 1.
+
+| Do this | To |
+| --- | --- |
+| **INPUT** | pick **IN 1** or **IN 2** (a microphone, in the middle; **PAN** moves it) or **IN 1+2** (a stereo pair). **AUDIO DEVICE AND INPUTS...** picks the interface and which of its inputs are 1 and 2 |
+| **MON** / `M`, **FX** / **DRY** / `Shift+M` | hear yourself, through the vocal rack or dry (headphones avoid feedback). Recordings are always dry |
+| **REC VOCAL** / `V` | record from the next bar (from bar 1 when the transport is stopped: it starts it), after the count-in. Press again (**STOP REC**) or STOP to finish: what was sung is kept |
+| Record again later in the song | only the part you sing over is replaced (a punch-in); the rest stays. The takes it is pieced from show as lines under the recording (T1, T2...) |
+| **COUNT 1**, **CLICK** / `K` | count-in and metronome, as on the looper: never recorded or exported |
+| `Ctrl+Z` | take off the last recording (or undo a clear / reset) |
+| **CLEAR** / `Delete` | empty the recording and reset the track's rack |
+| **RESET** | input gain, level, pan, monitoring and the rack back to the start; the recording stays |
+
+The recording is moved back by the audio device's latency so it lands on the beat.
+It keeps its timing in seconds, so change the tempo before you record, not after.
+Exports include each vocal track as its own stem (`VOX-1`); a vocal recorded during
+a REC take is in that take's export. Saving a project writes each vocal track as one
+WAV file in the `<project> loops` folder.
 
 ### The kit
 
@@ -278,7 +303,8 @@ node web/tests/parity.mjs <native_render>  # wasm output must match the native e
   `EngineCore` (the drum machine: sequencer, patterns, voices, mixer, drum bus),
   `BassEngine` / `BassVoice` / `BassState` (the bass synth: notes, scales, cut
   groups, its 8 sounds), `LooperEngine` / `LooperState` (the looper: loop slots,
-  bar-synced recording, slices), `Automation` (recorded effect moves), `Voice` (every drum voice
+  bar-synced recording, slices), `VocalEngine` / `VocalState` (the vocal track:
+  recordings pieced into a clip along the song, punch-ins), `Automation` (recorded effect moves), `Voice` (every drum voice
   in its three characters), `Hr16Bank` (the embedded HR-16 samples in
   `assets/hr16`), `FxChain` (effects rack) and `Effects` (grain delay, reverb,
   Psychosis, chorus), `OfflineRenderer` (take replay and WAV export),
@@ -286,7 +312,7 @@ node web/tests/parity.mjs <native_render>  # wasm output must match the native e
 - `Source/app`: `PluginProcessor` runs the engine on the audio thread, receives
   UI commands through a lock-free queue and records them with sample positions;
   `PluginEditor` is the studio window, which opens each tool's window
-  (`DrumMachineView`, `BassSynthView`, `LooperView`); `SignalBox` draws the signal panels; `Shared` and `Widgets` hold what they share;
+  (`DrumMachineView`, `BassSynthView`, `LooperView`, `VocalView`); `SignalBox` draws the signal panels; `Shared` and `Widgets` hold what they share;
   `Standalone` reaches the standalone app's audio device (input, latency).
 - `web/wasm/WebEngine.cpp`: the engine as plain C functions for the browser.
   `web/site`: the page (`app.js`), the audio worklet that runs the engine
