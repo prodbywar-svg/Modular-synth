@@ -77,6 +77,30 @@ public:
     };
     LooperReadout looperReadout (int tool) const;
 
+    // ---- vocal tracks (message thread) ----------------------------------------
+    // Starts recording onto a vocal track from the next bar (with the
+    // transport stopped, from when PLAY is pressed), until stopVocalRecord.
+    // The new recording replaces what was there for as long as it lasts.
+    void recordVocal (int tool);
+    void stopVocalRecord (int tool);
+    // Sets what a vocal track plays (null empties it), remembering the old for undo.
+    void setVocalClip (int tool, const ms::VocalClip*);
+    // Puts the track back to before its last recording or change.
+    bool undoVocal (int tool);
+    int vocalLayers (int tool) const;
+    // Keeps a clip alive while the caller holds it.
+    std::shared_ptr<const ms::VocalClip> holdClip (const ms::VocalClip*) const;
+
+    struct VocalReadout
+    {
+        ms::VocalEngine::Status status = ms::VocalEngine::Status::Idle;
+        int countBeats = 0;
+        std::int64_t recordStart = 0; // on the timeline, samples
+        std::int64_t recorded = 0;    // samples so far
+        std::int64_t position = 0;    // samples since PLAY
+    };
+    VocalReadout vocalReadout (int tool) const;
+
     // Returns a recording once Record has been stopped.
     std::optional<ms::Take> takeFinishedRecording();
     const std::optional<ms::Take>& getLastTake() const { return lastTake; }
@@ -157,9 +181,13 @@ private:
     void pushLayer (int looper, int slot, const ms::LoopAudio* previous);
     void collectLoops();
     void topUpInputChunks();
-    bool anyLooper() const;
+    bool anyInputTool() const; // a looper or a vocal track: something that records the input
     juce::var studioVarWithLoops (const juce::File& folder, bool relative);
     void loadLoops (ms::StudioState&, const std::array<ms::LoopFiles, ms::kMaxLoopers>&, const juce::File& base, juce::String& error);
+    void loadVocals (ms::StudioState&, const std::array<ms::VocalFile, ms::kMaxVocals>&, const juce::File& base, juce::String& error);
+    const ms::VocalClip* newClip (ms::VocalClip&&);
+    void pushVocalLayer (int vocal, const ms::VocalClip* previous);
+    void takeFinishedVocals();
 
     ms::StudioEngine engine;
 
@@ -183,6 +211,32 @@ private:
     static constexpr size_t kMaxLayers = 16;
     std::array<std::array<std::vector<std::shared_ptr<const ms::LoopAudio>>, ms::kNumPatterns>, ms::kMaxLoopers> layers;
     std::atomic<int> inputLatency { 0 };
+
+    // vocal clips and recordings, owned here like the loops
+    struct HeldClip
+    {
+        std::shared_ptr<ms::VocalClip> clip;
+        juce::uint32 lastUsed = 0;
+    };
+    std::vector<HeldClip> clips;
+    std::array<std::vector<std::shared_ptr<const ms::VocalClip>>, ms::kMaxVocals> vocalUndo;
+    std::array<std::shared_ptr<ms::VocalRecording>, ms::kMaxVocals> vocalRecordings; // the one each track records into
+    struct RetiredRecording
+    {
+        std::shared_ptr<ms::VocalRecording> recording;
+        juce::uint32 since = 0;
+    };
+    std::vector<RetiredRecording> retiredRecordings; // replaced while the audio thread may still have them
+
+    // finished vocal recordings, audio -> message thread
+    struct FinishedVocal
+    {
+        int vocal = 0;
+        ms::VocalEngine::Finished done;
+    };
+    juce::AbstractFifo finishedVocalFifo { 64 };
+    std::array<FinishedVocal, 64> finishedVocals {};
+    std::array<int, ms::kMaxVocals> finishedVocalSeen {}; // audio thread
 
     // finished loop recordings, audio -> message thread
     struct FinishedLoop
@@ -225,6 +279,8 @@ private:
     std::array<std::atomic<bool>, ms::kMaxLoopers> looperOverdub {};
     std::array<std::atomic<double>, ms::kMaxLoopers> looperProgress {}, looperPosition {};
     std::array<std::atomic<const ms::LoopAudio*>, ms::kMaxLoopers> recordingLoops {};
+    std::array<std::atomic<int>, ms::kMaxVocals> vocalStatus {}, vocalCount {};
+    std::array<std::atomic<std::int64_t>, ms::kMaxVocals> vocalStart {}, vocalRecorded {}, vocalPosition {};
     std::atomic<std::int64_t> recordedSampleCount { 0 }, playedSampleCount { 0 };
     std::atomic<float> masterPeakValue { 0.0f };
     std::array<std::atomic<float>, ms::kNumToolSlots> toolPeaks {}, busPeaks {};

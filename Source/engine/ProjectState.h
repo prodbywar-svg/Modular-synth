@@ -123,6 +123,12 @@ enum class CommandType : std::uint8_t
     SetCountIn,       // value = bars of clicks before a recording starts (0 = none)
     SetMonitorDry,    // value 1 = the monitored input skips the rack, 0 = through it
     SetMetronome,     // index = kClickOff / kClickPlaying / kClickRecording
+    // The vocal track (see VocalState.h). It shares the looper's input,
+    // monitor, count-in and click commands; its rack is track -1.
+    RecordVocal,      // vocal = where it records: from the next bar (after any count-in)
+                      // until StopVocalRecord; track = the input latency, filled in by the processor
+    StopVocalRecord,  // ends the recording now, or stops it waiting
+    SetVocalClip,     // clip = what the track plays (null empties it)
 };
 
 constexpr int kAllRacks = -2;
@@ -133,6 +139,8 @@ constexpr int kStudio = -1; // the studio master rack and level
 constexpr int kDrumTool = 0;
 
 struct LoopAudio;
+struct VocalRecording;
+struct VocalClip;
 
 struct Command
 {
@@ -143,6 +151,8 @@ struct Command
     const SampleData* sample = nullptr;
     int tool = kDrumTool;
     LoopAudio* loop = nullptr; // SetLoopAudio, RecordLoop
+    VocalRecording* vocal = nullptr; // RecordVocal
+    const VocalClip* clip = nullptr; // SetVocalClip
 };
 
 struct TimedCommand

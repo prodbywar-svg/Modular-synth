@@ -188,6 +188,9 @@ void applyToLooper (LooperState& l, const Command& c)
         case CommandType::SetScale:
         case CommandType::RecordLoop:
         case CommandType::CancelLoopRecord:
+        case CommandType::RecordVocal:
+        case CommandType::StopVocalRecord:
+        case CommandType::SetVocalClip:
             break;
     }
 }

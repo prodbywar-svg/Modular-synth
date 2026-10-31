@@ -4,6 +4,7 @@
 #include "EngineCore.h"
 #include "LooperEngine.h"
 #include "StudioState.h"
+#include "VocalEngine.h"
 
 namespace ms
 {
@@ -30,10 +31,12 @@ public:
     // only that track of the tool. One stem each.
     void setSoloRender (int tool, int track = -1);
 
-    // The audio input for the next process() call, for the loopers (null = silence).
+    // The audio input for the next process() call, for the loopers and vocal tracks (null = silence).
     void setInput (const float* left, const float* right);
-    // Live, loopers record their input; playing a take back they don't.
+    // Live, loopers and vocal tracks record their input; playing a take back they don't.
     void setRecordsInput (bool b);
+    // Where the vocal tracks get room for their recordings, on the audio thread.
+    void setChunkSource (std::function<float*()>);
 
     // Overwrites left/right with numSamples of output.
     void process (float* left, float* right, int numSamples);
@@ -44,6 +47,8 @@ public:
     BassEngine& bass (int index) { return bassEngines[(size_t) index]; }
     LooperEngine& looper (int index) { return looperEngines[(size_t) index]; }
     const LooperEngine& looper (int index) const { return looperEngines[(size_t) index]; }
+    VocalEngine& vocal (int index) { return vocalEngines[(size_t) index]; }
+    const VocalEngine& vocal (int index) const { return vocalEngines[(size_t) index]; }
     // A track (drum or bass row) of a tool: peak, output, hit since clearTriggered().
     float trackPeak (int tool, int track) const;
     const float* trackOutput (int tool, int track) const;
@@ -75,6 +80,7 @@ private:
     EngineCore drumEngine;
     std::array<BassEngine, kMaxBassSynths> bassEngines;
     std::array<LooperEngine, kMaxLoopers> looperEngines;
+    std::array<VocalEngine, kMaxVocals> vocalEngines;
     const float* inL = nullptr;
     const float* inR = nullptr;
     FxChain masterFx;
@@ -83,6 +89,7 @@ private:
     bool playing = false;
     int step = 0;
     double stepPhase = 0.0;
+    std::int64_t played = 0; // samples since PLAY
     int soloTool = -1;
 
     std::array<float, kNumToolSlots> toolPeaks {};

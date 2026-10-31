@@ -83,6 +83,7 @@ public:
         level.setLabel ("LEVEL");
         level.setDefault (toolKind (tool) == ToolKind::Bass     ? BassState().masterLevel
                           : toolKind (tool) == ToolKind::Looper ? LooperState().masterLevel
+                          : toolKind (tool) == ToolKind::Vocal  ? VocalState().masterLevel
                                                                 : ProjectState().masterLevel);
         level.format = [] (float v) { return formatDb (levelToGain (v)); };
         level.onChange = [this] (float v) { editor.send (CommandType::SetMasterLevel, tool, 0, 0, v); };
@@ -99,6 +100,8 @@ public:
             level.setValue (editor.processor().getStudioState().bass[(size_t) b].masterLevel);
         else if (const int l = looperIndex (tool); l >= 0)
             level.setValue (editor.processor().getStudioState().loopers[(size_t) l].masterLevel);
+        else if (const int v = vocalIndex (tool); v >= 0)
+            level.setValue (editor.processor().getStudioState().vocals[(size_t) v].masterLevel);
         else
             level.setValue (editor.processor().getUiState().masterLevel);
         repaint();
@@ -224,6 +227,23 @@ private:
             else if (readout.status == LooperEngine::Status::Recording)
                 now = (readout.overdub ? "OVERDUB " : "REC ") + juce::String (juce::roundToInt (readout.progress * 100.0)) + "%";
             return "P" + juce::String (l.pattern + 1) + " // " + now + " // " + look::pad (loops, 2) + " OF 04 LOOPS";
+        }
+        if (const int index = vocalIndex (tool); index >= 0)
+        {
+            const auto& v = proc.getStudioState().vocals[(size_t) index];
+            const auto readout = proc.vocalReadout (tool);
+            const double sr = proc.getEngineSampleRate();
+            juce::String now = loopInputName (v.input) + juce::String (v.monitor ? (v.monitorDry ? " MON DRY" : " MON FX") : "")
+                               + juce::String (v.metronome == kClickOff ? "" : " CLICK");
+            if (readout.status == VocalEngine::Status::Waiting)
+                now = "REC WAITS FOR THE BAR";
+            else if (readout.status == VocalEngine::Status::CountIn)
+                now = "COUNT-IN " + juce::String (readout.countBeats);
+            else if (readout.status == VocalEngine::Status::Recording)
+                now = "REC " + formatTime ((double) readout.recorded / sr);
+            const juce::String take = v.clip == nullptr || v.clip->empty() ? juce::String ("EMPTY")
+                                                                           : formatTime ((double) v.clip->end() / sr) + " LONG";
+            return now + " // " + take;
         }
         return {};
     }
@@ -380,6 +400,15 @@ ModularSynthEditor::ModularSynthEditor (ModularSynthProcessor& p) : AudioProcess
                 return;
             }
     };
+    addAndMakeVisible (addVocalButton);
+    addVocalButton.onClick = [this] {
+        for (int t = kFirstVocalTool; t < kFirstVocalTool + kMaxVocals; ++t)
+            if (! proc.getStudioState().tools[(size_t) t].active)
+            {
+                addTool (t);
+                return;
+            }
+    };
     addDrumsButton.onClick = [this] { addTool (kDrumTool); };
     addBassButton.onClick = [this] {
         for (int t = kFirstBassTool; t < kFirstBassTool + kMaxBassSynths; ++t)
@@ -426,8 +455,8 @@ ModularSynthEditor::ModularSynthEditor (ModularSynthProcessor& p) : AudioProcess
 
     lastFolder = juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("Modular-synth");
 
-    // the loopers need the input: nothing reaches the speakers from it
-    // unless a looper monitors it
+    // the loopers and vocal tracks need the input: nothing reaches the
+    // speakers from it unless one of them monitors it
     standalone::unmuteInput();
 
     setWantsKeyboardFocus (true);
@@ -499,6 +528,13 @@ void ModularSynthEditor::createToolWindow (int tool, juce::Rectangle<int> bounds
     else if (toolKind (tool) == ToolKind::Looper)
     {
         auto view = std::make_unique<LooperView> (proc, tool);
+        view->onUnhandledKey = keys;
+        tick = [raw = view.get()] { raw->tick(); };
+        content = std::move (view);
+    }
+    else if (toolKind (tool) == ToolKind::Vocal)
+    {
+        auto view = std::make_unique<VocalView> (proc, tool);
         view->onUnhandledKey = keys;
         tick = [raw = view.get()] { raw->tick(); };
         content = std::move (view);
@@ -913,16 +949,18 @@ void ModularSynthEditor::paint (juce::Graphics& g)
     const int nextY = stripsBottom() - kAddRowHeight;
     g.setColour (look::faint);
     g.fillRect (kMargin, nextY, getWidth() - 2 * kMargin, 1);
-    int freeBass = 0, freeLoopers = 0;
+    int freeBass = 0, freeLoopers = 0, freeVocals = 0;
     for (int t = kFirstBassTool; t < kFirstBassTool + kMaxBassSynths; ++t)
         freeBass += proc.getStudioState().tools[(size_t) t].active ? 0 : 1;
     for (int t = kFirstLooperTool; t < kFirstLooperTool + kMaxLoopers; ++t)
         freeLoopers += proc.getStudioState().tools[(size_t) t].active ? 0 : 1;
+    for (int t = kFirstVocalTool; t < kFirstVocalTool + kMaxVocals; ++t)
+        freeVocals += proc.getStudioState().tools[(size_t) t].active ? 0 : 1;
     g.setColour (look::dim);
-    g.drawText ("ADD // " + juce::String (freeBass) + " OF " + juce::String (kMaxBassSynths) + " BASS SYNTHS, "
-                    + juce::String (freeLoopers) + " OF " + juce::String (kMaxLoopers) + " LOOPERS FREE",
-                kMargin + 48, nextY + 8, 300, 20, juce::Justification::centredLeft, true);
-    g.drawText ("LOOPERS RECORD THE AUDIO INPUT // " + standalone::inputDescription(), kMargin + 48, nextY + 36, 600, 14,
+    g.drawText ("ADD // FREE: " + juce::String (freeBass) + " BASS, " + juce::String (freeLoopers) + " LOOPERS, "
+                    + juce::String (freeVocals) + " VOCALS",
+                kMargin + 48, nextY + 8, 236, 20, juce::Justification::centredLeft, true);
+    g.drawText ("LOOPERS AND VOCAL TRACKS RECORD THE AUDIO INPUT // " + standalone::inputDescription(), kMargin + 48, nextY + 36, 700, 14,
                 juce::Justification::centredLeft, true);
 
     // status line
@@ -1003,7 +1041,16 @@ void ModularSynthEditor::resized()
     for (int t = kFirstLooperTool; t < kFirstLooperTool + kMaxLoopers; ++t)
         freeLooper = freeLooper || ! studio.tools[(size_t) t].active;
     addLooperButton.setVisible (freeLooper);
-    addLooperButton.setBounds (add.removeFromLeft (110));
+    if (freeLooper)
+    {
+        addLooperButton.setBounds (add.removeFromLeft (110));
+        add.removeFromLeft (8);
+    }
+    bool freeVocal = false;
+    for (int t = kFirstVocalTool; t < kFirstVocalTool + kMaxVocals; ++t)
+        freeVocal = freeVocal || ! studio.tools[(size_t) t].active;
+    addVocalButton.setVisible (freeVocal);
+    addVocalButton.setBounds (add.removeFromLeft (100));
 }
 
 int ModularSynthEditor::toolsMask() const

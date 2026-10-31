@@ -38,6 +38,8 @@ set(ENGINE_SOURCES
     Source/engine/BassEngine.cpp
     Source/engine/LooperState.cpp
     Source/engine/LooperEngine.cpp
+    Source/engine/VocalState.cpp
+    Source/engine/VocalEngine.cpp
     Source/engine/StudioState.cpp
     Source/engine/StudioEngine.cpp
     Source/engine/OfflineRenderer.cpp)
@@ -82,6 +84,7 @@ target_sources(ModularSynth PRIVATE
     Source/app/SignalBox.cpp
     Source/app/Standalone.cpp
     Source/app/LooperView.cpp
+    Source/app/VocalView.cpp
     Source/app/Widgets.cpp)
 
 target_include_directories(ModularSynth PRIVATE Source)
